@@ -7,7 +7,7 @@ import { getAll as getActiveSessions } from '../websocket/sessionManager';
 const router = Router();
 
 /**
- * GET /api/splashers
+ * GET /splashers
  * Public - returns currently active sessions (in-memory, not from DB).
  */
 router.get('/', (_req: Request, res: Response): void => {
@@ -23,7 +23,7 @@ router.get('/', (_req: Request, res: Response): void => {
 });
 
 /**
- * GET /api/splashers/:username
+ * GET /splashers/:username
  * Authenticated - returns archived sessions for the given username.
  * Regular users may only access their own data.
  * Admins may access any user data.

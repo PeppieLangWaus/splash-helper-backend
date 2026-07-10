@@ -9,7 +9,7 @@ import { enqueueWebhookNotification } from '../services/discordWebhook';
 const router = Router();
 
 /**
- * POST /api/sessions/upload
+ * POST /sessions/upload
  * Accepts a JSON array of SplashEntry objects in the request body.
  * Intended for manual testing only — real data comes through WebSocket.
  */

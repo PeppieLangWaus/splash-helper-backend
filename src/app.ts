@@ -17,15 +17,17 @@ const SWEEP_INTERVAL_MS = 2 * 60 * 1000; // check every 2 minutes
 const app = express();
 const PORT = process.env.PORT ?? 3000;
 
-app.use(cors());
+app.use(cors({
+  origin: process.env.CORS_ORIGIN_API ?? process.env.CORS_ORIGIN_WS,
+}));
 app.use(express.json({ limit: '10mb' }));
 
-app.use('/api/splashers', splashersRouter);
-app.use('/api/sessions', sessionsRouter);
-app.use('/api/auth', authRouter);
-app.use('/api/admin', adminRouter);
+app.use('/splashers', splashersRouter);
+app.use('/sessions', sessionsRouter);
+app.use('/auth', authRouter);
+app.use('/admin', adminRouter);
 
-app.get('/api/health', (_req, res) => {
+app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 
