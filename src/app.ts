@@ -7,6 +7,7 @@ import splashersRouter from './routes/splashers';
 import sessionsRouter from './routes/sessions';
 import authRouter from './routes/auth';
 import adminRouter from './routes/admin';
+import devRouter from './routes/dev';
 import { attachWebSocketServer } from './websocket/server';
 import { sweepInactiveSessions } from './websocket/handlers';
 
@@ -26,6 +27,10 @@ app.use('/splashers', splashersRouter);
 app.use('/sessions', sessionsRouter);
 app.use('/auth', authRouter);
 app.use('/admin', adminRouter);
+
+if (process.env.NODE_ENV !== 'production') {
+  app.use('/dev', devRouter);
+}
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });

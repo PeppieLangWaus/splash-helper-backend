@@ -11,7 +11,7 @@ const SETUP_LINK_EXPIRY = (process.env.SETUP_LINK_EXPIRY ?? '24h') as `${number}
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 
 /**
- * POST /api/auth/login
+ * POST /auth/login
  * Body: { username: string; password: string }
  * Returns: { token: string }
  */
@@ -41,7 +41,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
 });
 
 /**
- * POST /api/auth/setup/:setupToken
+ * POST /auth/setup/:setupToken
  * Body: { password: string }
  * Validates the signed setup JWT, sets the user's password, marks the link as used.
  */
