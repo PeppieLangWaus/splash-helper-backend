@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { SessionData } from '../types';
 
 const SPELLS = ['WIND_STRIKE', 'WATER_STRIKE', 'EARTH_STRIKE', 'FIRE_STRIKE'];
@@ -33,4 +34,48 @@ export function randomFakeSessionData(username: string, overrides: Partial<Sessi
     runeCostGp: spellsCast * runeCostPerCast * 4,
     ...overrides,
   };
+}
+
+export interface FakeArchivedSessionRecord {
+  sessionId: string;
+  createdTimestamp: number;
+  finalizedTimestamp: number;
+  session: SessionData;
+}
+
+/**
+ * Generates finished, already-archived-looking sessions spread across the
+ * past month, for seeding a fake user's session history in dev mode.
+ */
+export function randomFakeHistoricalSessions(username: string, count = 5): FakeArchivedSessionRecord[] {
+  const records: FakeArchivedSessionRecord[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const daysAgo = randomInt(1, 30);
+    const durationMinutes = randomInt(15, 180);
+    const startTime = new Date(Date.now() - daysAgo * 24 * 60 * 60_000 - durationMinutes * 60_000);
+    const endTime = new Date(startTime.getTime() + durationMinutes * 60_000);
+    const spellsCast = randomInt(100, 5000);
+    const runeCostPerCast = 2;
+
+    const session = randomFakeSessionData(username, {
+      startTime: startTime.toISOString(),
+      logoutTime: endTime.toISOString(),
+      endTime: endTime.toISOString(),
+      spellsCast,
+      currentMagicXp: 300_000 + spellsCast * 30,
+      currentRuneCount: Math.max(0, 10_000 - spellsCast * runeCostPerCast),
+      runeUsageMap: { '556': spellsCast },
+      runeCostGp: spellsCast * runeCostPerCast * 4,
+    });
+
+    records.push({
+      sessionId: randomUUID(),
+      createdTimestamp: startTime.getTime(),
+      finalizedTimestamp: endTime.getTime(),
+      session,
+    });
+  }
+
+  return records;
 }
