@@ -54,23 +54,17 @@ export async function handleAuth(ws: WebSocket, msg: WsAuthMessage): Promise<voi
     return;
   }
 
-  // Archive any existing active session for this username before overwriting,
-  // but only if it belongs to a DIFFERENT WebSocket connection.
-  // When the plugin calls AUTH again on the *same* socket (e.g. to refresh the
-  // setup link via requestSetupLink()), we must NOT archive the live session —
-  // that would make the session disappear from the active-splashers view.
+  // Preserve any in-progress session across re-AUTH, regardless of whether
+  // it's the same socket (e.g. requestSetupLink()) or a new one (e.g. the
+  // plugin reconnecting after a dropped connection). Archiving here would
+  // fragment one continuous splash session into several tiny archived ones
+  // every time the connection blips. A session is only archived on an
+  // explicit SESSION_END, or by the inactivity sweep if the client never
+  // reconnects.
   const existing = getSession(username);
-  const isSameSocket = existing?.ws === ws;
-  if (existing?.authenticated && existing.sessionData && !isSameSocket) {
-    console.log(`Re-auth for "${username}" with active session on different socket — archiving existing session`);
-    await archiveSession(username, existing.sessionData);
-  }
-
   const state = createInitialState(username, ws);
   state.authenticated = true;
-  // Preserve session data when re-authing on the same socket so that the
-  // active session remains visible without requiring a fresh SESSION_START.
-  if (isSameSocket && existing?.sessionData) {
+  if (existing?.sessionData) {
     state.sessionData = existing.sessionData;
     state.lastUpdate = existing.lastUpdate;
   }
@@ -103,17 +97,28 @@ export function handleSessionUpdate(ws: WebSocket, msg: WsSessionMessage): void 
 
 // ── Shared archive helper ─────────────────────────────────────────────────────
 
+function toTimestamp(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
 async function archiveSession(username: string, sessionData: SessionData): Promise<void> {
   const user = await User.findOne({ username });
   if (!user) return;
 
   const sessionId = randomUUID();
   const now = Date.now();
+  // Use the session's own start/end times rather than "now" — "now" is when
+  // it happened to be archived (e.g. a disconnect or sweep), not when the
+  // splash session actually took place.
+  const createdTimestamp = toTimestamp(sessionData.startTime, now);
+  const finalizedTimestamp = toTimestamp(sessionData.endTime ?? sessionData.logoutTime, now);
   try {
     await ArchivedSession.create({
       sessionId,
-      createdTimestamp: now,
-      finalizedTimestamp: now,
+      createdTimestamp,
+      finalizedTimestamp,
       userId: user._id,
       username,
       session: sessionData,
@@ -123,8 +128,8 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
     enqueueWebhookNotification(webhookUrl, username, [
       {
         sessionId,
-        createdTimestamp: now,
-        finalizedTimestamp: now,
+        createdTimestamp,
+        finalizedTimestamp,
         syncedToServer: true,
         session: sessionData,
       },
@@ -149,20 +154,16 @@ export async function handleSessionEnd(ws: WebSocket, msg: WsSessionMessage): Pr
 
 /**
  * Called when a WebSocket connection closes.
- * If the session had active data it is archived so nothing is lost.
+ * The session is kept in memory rather than archived immediately, since the
+ * client typically reconnects (network blip, client restart) and resumes the
+ * same splash session. It's only archived via an explicit SESSION_END, or by
+ * the inactivity sweep if the client never comes back.
  */
 export async function handleDisconnect(ws: WebSocket): Promise<void> {
   const state = getSessionForSocket(ws);
   if (!state) return;
 
-  const { username, sessionData } = state;
-  removeSession(username);
-
-  if (state.authenticated && sessionData) {
-    console.log(`WS disconnected with active session for "${username}" — archiving`);
-    await archiveSession(username, sessionData);
-  }
-
+  console.log(`WS disconnected for "${state.username}"`);
   triggerEmbedUpdate();
 }
 
