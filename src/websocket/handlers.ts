@@ -12,7 +12,7 @@ import {
   createInitialState,
 } from './sessionManager';
 import { enqueueWebhookNotification } from '../services/discordWebhook';
-import { updateActiveSessionsEmbed } from '../services/discordGateway';
+import { updateActiveSessionsEmbed, announceNewSession } from '../services/discordGateway';
 import { getAll as getActiveSessions } from './sessionManager';
 import {
   WsIncomingMessage,
@@ -82,7 +82,7 @@ export function handleSessionStart(ws: WebSocket, msg: WsSessionMessage): void {
   if (!state) return;
 
   updateSessionData(state.username, msg.sessionData);
-  triggerEmbedUpdate();
+  triggerEmbedAnnounce();
   send(ws, { type: 'ACK' });
 }
 
@@ -97,10 +97,17 @@ export function handleSessionUpdate(ws: WebSocket, msg: WsSessionMessage): void 
 
 // ── Shared archive helper ─────────────────────────────────────────────────────
 
-function toTimestamp(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
+function toTimestamp(value: string | undefined, fallback: number, label: string): number {
+  if (!value) {
+    console.warn(`archiveSession: missing ${label}, falling back to current time`);
+    return fallback;
+  }
   const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? fallback : parsed;
+  if (Number.isNaN(parsed)) {
+    console.warn(`archiveSession: unparseable ${label} "${value}", falling back to current time`);
+    return fallback;
+  }
+  return parsed;
 }
 
 async function archiveSession(username: string, sessionData: SessionData): Promise<void> {
@@ -112,8 +119,8 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
   // Use the session's own start/end times rather than "now" — "now" is when
   // it happened to be archived (e.g. a disconnect or sweep), not when the
   // splash session actually took place.
-  const createdTimestamp = toTimestamp(sessionData.startTime, now);
-  const finalizedTimestamp = toTimestamp(sessionData.endTime ?? sessionData.logoutTime, now);
+  const createdTimestamp = toTimestamp(sessionData.startTime, now, 'startTime');
+  const finalizedTimestamp = toTimestamp(sessionData.endTime ?? sessionData.logoutTime, now, 'endTime/logoutTime');
   try {
     await ArchivedSession.create({
       sessionId,
@@ -167,24 +174,47 @@ export async function handleDisconnect(ws: WebSocket): Promise<void> {
   triggerEmbedUpdate();
 }
 
+let sweepInProgress = false;
+
 /**
- * Sweep for sessions that have not sent any update for more than `maxAgeMs`.
- * Covers edge cases where the connection stays open but data stops flowing.
+ * Sweep for disconnected sessions that have not sent any update for more than
+ * `maxAgeMs`. Requires the socket to actually be closed (not just quiet) so
+ * that a still-connected session that's merely idle (e.g. banking, AFK) is
+ * never archived out from under an active plugin — only SESSION_END or a
+ * genuine disconnect-then-timeout should end a session.
  */
 export async function sweepInactiveSessions(maxAgeMs: number): Promise<void> {
-  const now = Date.now();
-  const stale = getActiveSessions().filter(
-    (s) => s.authenticated && s.sessionData !== null && now - s.lastUpdate > maxAgeMs,
-  );
-
-  for (const state of stale) {
-    console.log(`Sweeping inactive session for "${state.username}" (last update ${Math.round((now - state.lastUpdate) / 1000)}s ago)`);
-    removeSession(state.username);
-    await archiveSession(state.username, state.sessionData!);
+  if (sweepInProgress) {
+    console.log('Sweep already in progress, skipping this tick');
+    return;
   }
+  sweepInProgress = true;
 
-  if (stale.length > 0) {
-    triggerEmbedUpdate();
+  try {
+    const now = Date.now();
+    const stale = getActiveSessions().filter(
+      (s) =>
+        s.authenticated &&
+        s.sessionData !== null &&
+        s.ws.readyState !== WebSocket.OPEN &&
+        now - s.lastUpdate > maxAgeMs,
+    );
+
+    for (const state of stale) {
+      // Re-check under the map: a prior iteration's archiveSession() await
+      // may have let a reconnect or SESSION_END remove/replace this entry.
+      if (getSession(state.username) !== state) continue;
+
+      console.log(`Sweeping inactive session for "${state.username}" (last update ${Math.round((now - state.lastUpdate) / 1000)}s ago)`);
+      removeSession(state.username);
+      await archiveSession(state.username, state.sessionData!);
+    }
+
+    if (stale.length > 0) {
+      triggerEmbedUpdate();
+    }
+  } finally {
+    sweepInProgress = false;
   }
 }
 
@@ -239,10 +269,31 @@ function getSessionForSocket(ws: WebSocket) {
 }
 
 let embedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-function triggerEmbedUpdate(): void {
+let pendingAnnounce = false;
+
+function scheduleEmbedUpdate(announce: boolean): void {
+  if (announce) pendingAnnounce = true;
   if (embedDebounceTimer) clearTimeout(embedDebounceTimer);
   embedDebounceTimer = setTimeout(() => {
-    updateActiveSessionsEmbed(getActiveSessions());
+    const sessions = getActiveSessions();
+    if (pendingAnnounce) {
+      announceNewSession(sessions);
+    } else {
+      updateActiveSessionsEmbed(sessions);
+    }
+    pendingAnnounce = false;
     embedDebounceTimer = null;
   }, 2000);
+}
+
+function triggerEmbedUpdate(): void {
+  scheduleEmbedUpdate(false);
+}
+
+// A new session starting gets a divider + fresh message rather than an
+// in-place edit, so it's visually distinct from routine updates. If a
+// regular update was already pending, this upgrades it to an announce so the
+// divider still lands (rather than debouncing it away).
+function triggerEmbedAnnounce(): void {
+  scheduleEmbedUpdate(true);
 }
