@@ -28,6 +28,38 @@ export function updateActiveSessionsEmbed(sessions: ActiveSessionState[]): void 
   }, 2000);
 }
 
+/**
+ * Called when a new session is announced (SESSION_START). Rather than editing
+ * the existing active-sessions message in place, posts a divider and a fresh
+ * message so a new session starting is visually distinct in the channel's
+ * history, instead of silently blending into edits of the old message.
+ */
+export function announceNewSession(sessions: ActiveSessionState[]): void {
+  if (!WEBHOOK_URL) return;
+
+  if (embedDebounceTimer) clearTimeout(embedDebounceTimer);
+  embedDebounceTimer = setTimeout(() => {
+    void postNewActiveEmbed(sessions);
+    embedDebounceTimer = null;
+  }, 2000);
+}
+
+async function postNewActiveEmbed(sessions: ActiveSessionState[]): Promise<void> {
+  const client = getWebhookClient();
+  if (!client) return;
+
+  try {
+    await client.send({ content: '⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯' });
+  } catch (err) {
+    console.error('Failed to send new-session divider:', (err as Error).message);
+  }
+
+  // Force the next patch to send a brand-new message rather than editing the
+  // old one, so it lands right after the divider.
+  activeMessageId = null;
+  await patchActiveEmbed(sessions);
+}
+
 async function patchActiveEmbed(sessions: ActiveSessionState[]): Promise<void> {
   const client = getWebhookClient();
   if (!client) return;
@@ -62,8 +94,9 @@ function buildActiveSessionsEmbed(sessions: ActiveSessionState[]): EmbedBuilder 
   const now = Date.now();
 
   const embed = new EmbedBuilder()
-    .setTitle('🐠 Active Splashers')
+    .setTitle('Active Splashers')
     .setColor(0x3498db)
+    .setThumbnail('https://cdn.discordapp.com/icons/1489687499981979741/c99d3edc2be96bb7a18673a62a3561b8.webp?size=80&quality=lossless')
     .setFooter({ text: `Splash Helper • ${sessions.length} active` })
     .setTimestamp();
 
@@ -77,7 +110,7 @@ function buildActiveSessionsEmbed(sessions: ActiveSessionState[]): EmbedBuilder 
 
       embed.addFields({
         name: `${d.playerName} — World ${d.world}`,
-        value: `Spell: ${d.spell} | Players: ${d.highestPlayerCount} | Duration: ${duration}`,
+        value: `Spell: ${d.spell} | Players: ${d.pickpocketerCount} | Duration: ${duration}`,
         inline: false,
       });
     }

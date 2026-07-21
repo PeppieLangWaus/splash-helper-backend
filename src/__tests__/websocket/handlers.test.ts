@@ -12,6 +12,7 @@ jest.mock('../../services/discordWebhook', () => ({
 }));
 jest.mock('../../services/discordGateway', () => ({
   updateActiveSessionsEmbed: jest.fn(),
+  announceNewSession: jest.fn(),
 }));
 
 class MockWebSocket {
