@@ -16,48 +16,42 @@ function getWebhookClient(): WebhookClient | null {
 
 // ── Active session embed update ───────────────────────────────────────────────
 
-let embedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+// How often the single active-sessions message gets edited, in ms. Configurable
+// via env so it can be tuned without a code change; defaults within the
+// 15-30s range Discord rate limits comfortably tolerate.
+const EMBED_UPDATE_INTERVAL_MS = Number(process.env.DISCORD_EMBED_UPDATE_INTERVAL_MS) || 20_000;
 
+let lastEmbedUpdate = 0;
+let pendingSessions: ActiveSessionState[] | null = null;
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Throttled update of the single active-sessions message: edits happen at
+ * most once per EMBED_UPDATE_INTERVAL_MS, but the most recent session state
+ * always gets flushed on the trailing edge so nothing is lost between edits.
+ */
 export function updateActiveSessionsEmbed(sessions: ActiveSessionState[]): void {
   if (!WEBHOOK_URL) return;
 
-  if (embedDebounceTimer) clearTimeout(embedDebounceTimer);
-  embedDebounceTimer = setTimeout(() => {
+  const now = Date.now();
+  const elapsed = now - lastEmbedUpdate;
+
+  if (elapsed >= EMBED_UPDATE_INTERVAL_MS) {
+    lastEmbedUpdate = now;
     void patchActiveEmbed(sessions);
-    embedDebounceTimer = null;
-  }, 2000);
-}
-
-/**
- * Called when a new session is announced (SESSION_START). Rather than editing
- * the existing active-sessions message in place, posts a divider and a fresh
- * message so a new session starting is visually distinct in the channel's
- * history, instead of silently blending into edits of the old message.
- */
-export function announceNewSession(sessions: ActiveSessionState[]): void {
-  if (!WEBHOOK_URL) return;
-
-  if (embedDebounceTimer) clearTimeout(embedDebounceTimer);
-  embedDebounceTimer = setTimeout(() => {
-    void postNewActiveEmbed(sessions);
-    embedDebounceTimer = null;
-  }, 2000);
-}
-
-async function postNewActiveEmbed(sessions: ActiveSessionState[]): Promise<void> {
-  const client = getWebhookClient();
-  if (!client) return;
-
-  try {
-    await client.send({ content: '⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯' });
-  } catch (err) {
-    console.error('Failed to send new-session divider:', (err as Error).message);
+    return;
   }
 
-  // Force the next patch to send a brand-new message rather than editing the
-  // old one, so it lands right after the divider.
-  activeMessageId = null;
-  await patchActiveEmbed(sessions);
+  pendingSessions = sessions;
+  if (pendingTimer) return;
+
+  pendingTimer = setTimeout(() => {
+    pendingTimer = null;
+    lastEmbedUpdate = Date.now();
+    const toSend = pendingSessions;
+    pendingSessions = null;
+    if (toSend) void patchActiveEmbed(toSend);
+  }, EMBED_UPDATE_INTERVAL_MS - elapsed);
 }
 
 async function patchActiveEmbed(sessions: ActiveSessionState[]): Promise<void> {
@@ -110,7 +104,7 @@ function buildActiveSessionsEmbed(sessions: ActiveSessionState[]): EmbedBuilder 
 
       embed.addFields({
         name: `${d.playerName} — World ${d.world}`,
-        value: `Spell: ${d.spell} | Players: ${d.pickpocketerCount} | Duration: ${duration}`,
+        value: `Spell: ${d.spell} | Players: ${d.averagePlayerCount} avg | Duration: ${duration}`,
         inline: false,
       });
     }

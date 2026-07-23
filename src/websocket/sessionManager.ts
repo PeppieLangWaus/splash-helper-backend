@@ -27,6 +27,15 @@ export function remove(username: string): void {
   sessions.delete(username);
 }
 
+/** Clears a finished session's data while keeping the connection's authenticated state intact. */
+export function clearSessionData(username: string): void {
+  const existing = sessions.get(username);
+  if (existing) {
+    existing.sessionData = null;
+    existing.lastUpdate = Date.now();
+  }
+}
+
 export function createInitialState(username: string, ws: WebSocket): ActiveSessionState {
   return {
     ws,

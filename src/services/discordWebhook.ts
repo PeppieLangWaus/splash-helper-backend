@@ -1,15 +1,31 @@
 import { WebhookClient, EmbedBuilder } from 'discord.js';
 import { SplashEntry } from '../types';
 
-interface QueueItem {
-  webhookUrl: string;
-  username: string;
-  entries: SplashEntry[];
+const DISCORD_EMBED_LIMIT = 10;
+
+// A single sequential queue of async tasks, shared by both the batch notifier and the
+// single-session upsert notifier, so all outgoing requests to a webhook stay ordered
+// (and rate-limit-friendly) regardless of which caller enqueued them.
+const queue: Array<() => Promise<void>> = [];
+let processing = false;
+
+function enqueue(task: () => Promise<void>): void {
+  queue.push(task);
+  if (!processing) {
+    void processQueue();
+  }
 }
 
-const DISCORD_EMBED_LIMIT = 10;
-const queue: QueueItem[] = [];
-let processing = false;
+async function processQueue(): Promise<void> {
+  processing = true;
+
+  while (queue.length > 0) {
+    const task = queue.shift()!;
+    await task();
+  }
+
+  processing = false;
+}
 
 // Cache WebhookClient instances by URL to reuse connections
 const webhookClients = new Map<string, WebhookClient>();
@@ -29,25 +45,10 @@ export function enqueueWebhookNotification(
   entries: SplashEntry[],
 ): void {
   if (!webhookUrl || entries.length === 0) return;
-  queue.push({ webhookUrl, username, entries });
-  if (!processing) {
-    void processQueue();
-  }
+  enqueue(() => sendWebhook(webhookUrl, username, entries));
 }
 
-async function processQueue(): Promise<void> {
-  processing = true;
-
-  while (queue.length > 0) {
-    const item = queue.shift()!;
-    await sendWebhook(item);
-  }
-
-  processing = false;
-}
-
-async function sendWebhook(item: QueueItem): Promise<void> {
-  const { webhookUrl, username, entries } = item;
+async function sendWebhook(webhookUrl: string, username: string, entries: SplashEntry[]): Promise<void> {
   const client = getWebhookClient(webhookUrl);
 
   for (let i = 0; i < entries.length; i += DISCORD_EMBED_LIMIT) {
@@ -60,6 +61,53 @@ async function sendWebhook(item: QueueItem): Promise<void> {
       console.error(`Discord webhook error for "${username}":`, (err as Error).message);
     }
   }
+}
+
+/**
+ * Post a single archived-session notification, or edit a previous one in place when
+ * `existingMessageId` is given — e.g. a session that was finalized on a brief inactivity
+ * timeout, then resumed and finalized again with more casts/XP, updates its original post
+ * instead of adding a duplicate. Falls back to posting a new message if the edit target no
+ * longer exists (e.g. manually deleted from Discord).
+ *
+ * Returns the id of the message that now reflects this entry, or undefined if no webhook is
+ * configured or the request failed.
+ */
+export function upsertArchivedSessionNotification(
+  webhookUrl: string,
+  username: string,
+  entry: SplashEntry,
+  existingMessageId?: string,
+): Promise<string | undefined> {
+  if (!webhookUrl) return Promise.resolve(undefined);
+
+  return new Promise((resolve) => {
+    enqueue(async () => {
+      const client = getWebhookClient(webhookUrl);
+      const embed = buildSessionEmbed(username, entry);
+
+      if (existingMessageId) {
+        try {
+          const msg = await client.editMessage(existingMessageId, { embeds: [embed] });
+          resolve(msg.id);
+          return;
+        } catch (err) {
+          console.warn(
+            `Failed to edit archived-session message ${existingMessageId} for "${username}", posting a new one instead:`,
+            (err as Error).message,
+          );
+        }
+      }
+
+      try {
+        const msg = await client.send({ embeds: [embed] });
+        resolve(msg.id);
+      } catch (err) {
+        console.error(`Discord webhook error for "${username}":`, (err as Error).message);
+        resolve(undefined);
+      }
+    });
+  });
 }
 
 function buildSessionEmbed(username: string, entry: SplashEntry): EmbedBuilder {

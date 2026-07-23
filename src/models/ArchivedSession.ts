@@ -8,6 +8,9 @@ export interface IArchivedSession extends Document {
   userId: Types.ObjectId;
   username: string;
   session: SessionData;
+  /** Discord message id of the archived-session notification, so a resumed session that
+   *  finalizes again can edit the existing post in place instead of adding a new one. */
+  discordMessageId?: string;
 }
 
 const SessionDataSchema = new Schema<SessionData>(
@@ -43,13 +46,16 @@ const ArchivedSessionSchema = new Schema<IArchivedSession>(
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     username: { type: String, required: true },
     session: { type: SessionDataSchema, required: true },
+    discordMessageId: { type: String },
   },
   { timestamps: false },
 );
 
-// Compound index to prevent duplicate sessions per user
+// One archived record per (user, session start): a session that is finalized, resumed,
+// and finalized again shares the same createdTimestamp (startTime) across those finalizations,
+// and should update the existing row rather than create a sibling one.
 ArchivedSessionSchema.index(
-  { userId: 1, createdTimestamp: 1, finalizedTimestamp: 1 },
+  { userId: 1, createdTimestamp: 1 },
   { unique: true },
 );
 
