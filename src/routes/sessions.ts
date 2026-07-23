@@ -39,10 +39,11 @@ router.post('/upload', async (req: Request, res: Response): Promise<void> => {
         user = await User.create({ username, passwordHash, token, isAdmin: false, setupLinkUsed: false });
       }
 
+      // One archived session per (user, startTime) — matches the unique index, and the
+      // live WebSocket archiving path's dedupe-by-session-start behavior.
       const duplicate = await ArchivedSession.exists({
         userId: user._id,
         createdTimestamp: entry.createdTimestamp,
-        finalizedTimestamp: entry.finalizedTimestamp,
       });
 
       if (duplicate) {
