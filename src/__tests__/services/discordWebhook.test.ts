@@ -8,7 +8,14 @@
  */
 
 let enqueueWebhookNotification: (url: string, username: string, entries: unknown[]) => void;
+let upsertArchivedSessionNotification: (
+  url: string,
+  username: string,
+  entry: ReturnType<typeof makeEntry>,
+  existingMessageId?: string,
+) => Promise<string | undefined>;
 let mockSend: jest.Mock;
+let mockEditMessage: jest.Mock;
 
 // Fixtures helper - inline to avoid cross-module issues after resetModules
 function makeEntry(overrides: Record<string, unknown> = {}) {
@@ -44,7 +51,8 @@ function makeEntry(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   jest.resetModules();
 
-  mockSend = jest.fn().mockResolvedValue(undefined);
+  mockSend = jest.fn().mockResolvedValue({ id: 'new-msg-id' });
+  mockEditMessage = jest.fn().mockResolvedValue({ id: 'edited-msg-id' });
 
   jest.mock('discord.js', () => {
     // Minimal EmbedBuilder stub that supports the chaining API
@@ -57,7 +65,7 @@ beforeEach(() => {
       setTimestamp(d?: Date) { this.data.timestamp = d; return this; }
     }
     return {
-      WebhookClient: jest.fn().mockImplementation(() => ({ send: mockSend })),
+      WebhookClient: jest.fn().mockImplementation(() => ({ send: mockSend, editMessage: mockEditMessage })),
       EmbedBuilder,
     };
   });
@@ -65,6 +73,7 @@ beforeEach(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const svc = require('../../services/discordWebhook') as typeof import('../../services/discordWebhook');
   enqueueWebhookNotification = svc.enqueueWebhookNotification as (url: string, username: string, entries: unknown[]) => void;
+  upsertArchivedSessionNotification = svc.upsertArchivedSessionNotification;
 });
 
 afterEach(() => {
@@ -143,5 +152,63 @@ describe('enqueueWebhookNotification', () => {
     resolveFn!(undefined);
     await new Promise((r) => setTimeout(r, 100));
     expect(calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('upsertArchivedSessionNotification', () => {
+  it('does nothing and resolves undefined when webhookUrl is empty', async () => {
+    const result = await upsertArchivedSessionNotification('', 'Player', makeEntry());
+    expect(result).toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockEditMessage).not.toHaveBeenCalled();
+  });
+
+  it('posts a new message and returns its id when no existingMessageId is given', async () => {
+    const result = await upsertArchivedSessionNotification(
+      'https://discord.com/api/webhooks/123/abc',
+      'Player',
+      makeEntry(),
+    );
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockEditMessage).not.toHaveBeenCalled();
+    expect(result).toBe('new-msg-id');
+  });
+
+  it('edits the existing message in place and returns its id when existingMessageId is given', async () => {
+    const result = await upsertArchivedSessionNotification(
+      'https://discord.com/api/webhooks/123/abc',
+      'Player',
+      makeEntry(),
+      'old-msg-id',
+    );
+    expect(mockEditMessage).toHaveBeenCalledTimes(1);
+    expect(mockEditMessage.mock.calls[0][0]).toBe('old-msg-id');
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(result).toBe('edited-msg-id');
+  });
+
+  it('falls back to posting a new message if editing fails (e.g. message was deleted)', async () => {
+    mockEditMessage.mockRejectedValueOnce(new Error('Unknown Message'));
+
+    const result = await upsertArchivedSessionNotification(
+      'https://discord.com/api/webhooks/123/abc',
+      'Player',
+      makeEntry(),
+      'stale-msg-id',
+    );
+    expect(mockEditMessage).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(result).toBe('new-msg-id');
+  });
+
+  it('resolves undefined if the send ultimately fails', async () => {
+    mockSend.mockRejectedValueOnce(new Error('network error'));
+
+    const result = await upsertArchivedSessionNotification(
+      'https://discord.com/api/webhooks/123/abc',
+      'Player',
+      makeEntry(),
+    );
+    expect(result).toBeUndefined();
   });
 });

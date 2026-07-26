@@ -9,10 +9,11 @@ import {
   set as setSession,
   updateSessionData,
   remove as removeSession,
+  clearSessionData,
   createInitialState,
 } from './sessionManager';
-import { enqueueWebhookNotification } from '../services/discordWebhook';
-import { updateActiveSessionsEmbed, announceNewSession } from '../services/discordGateway';
+import { upsertArchivedSessionNotification } from '../services/discordWebhook';
+import { updateActiveSessionsEmbed } from '../services/discordGateway';
 import { getAll as getActiveSessions } from './sessionManager';
 import {
   WsIncomingMessage,
@@ -82,7 +83,7 @@ export function handleSessionStart(ws: WebSocket, msg: WsSessionMessage): void {
   if (!state) return;
 
   updateSessionData(state.username, msg.sessionData);
-  triggerEmbedAnnounce();
+  triggerEmbedUpdate();
   send(ws, { type: 'ACK' });
 }
 
@@ -114,15 +115,55 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
   const user = await User.findOne({ username });
   if (!user) return;
 
-  const sessionId = randomUUID();
   const now = Date.now();
   // Use the session's own start/end times rather than "now" — "now" is when
   // it happened to be archived (e.g. a disconnect or sweep), not when the
   // splash session actually took place.
   const createdTimestamp = toTimestamp(sessionData.startTime, now, 'startTime');
   const finalizedTimestamp = toTimestamp(sessionData.endTime ?? sessionData.logoutTime, now, 'endTime/logoutTime');
+
   try {
-    await ArchivedSession.create({
+    // A session that gets finalized on a brief inactivity timeout, then resumed and
+    // finalized again later, shares the same startTime (createdTimestamp) across those
+    // finalizations. Look for that existing record instead of always inserting a new one,
+    // so the resumed continuation updates it in place rather than archiving (and
+    // webhook-notifying) the same splash session again as a sibling entry.
+    const existing = await ArchivedSession.findOne({ userId: user._id, createdTimestamp });
+
+    if (existing) {
+      if (finalizedTimestamp <= existing.finalizedTimestamp) {
+        console.warn(
+          `archiveSession: ignoring stale/out-of-order resend for "${username}" (createdTimestamp=${createdTimestamp})`,
+        );
+        return;
+      }
+
+      existing.finalizedTimestamp = finalizedTimestamp;
+      existing.session = sessionData;
+      await existing.save();
+
+      const webhookUrl = process.env.DISCORD_ARCHIVED_WEBHOOK_URL ?? '';
+      const messageId = await upsertArchivedSessionNotification(
+        webhookUrl,
+        username,
+        {
+          sessionId: existing.sessionId,
+          createdTimestamp,
+          finalizedTimestamp,
+          syncedToServer: true,
+          session: sessionData,
+        },
+        existing.discordMessageId,
+      );
+      if (messageId && messageId !== existing.discordMessageId) {
+        existing.discordMessageId = messageId;
+        await existing.save();
+      }
+      return;
+    }
+
+    const sessionId = randomUUID();
+    const created = await ArchivedSession.create({
       sessionId,
       createdTimestamp,
       finalizedTimestamp,
@@ -132,15 +173,17 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
     });
 
     const webhookUrl = process.env.DISCORD_ARCHIVED_WEBHOOK_URL ?? '';
-    enqueueWebhookNotification(webhookUrl, username, [
-      {
-        sessionId,
-        createdTimestamp,
-        finalizedTimestamp,
-        syncedToServer: true,
-        session: sessionData,
-      },
-    ]);
+    const messageId = await upsertArchivedSessionNotification(webhookUrl, username, {
+      sessionId,
+      createdTimestamp,
+      finalizedTimestamp,
+      syncedToServer: true,
+      session: sessionData,
+    });
+    if (messageId) {
+      created.discordMessageId = messageId;
+      await created.save();
+    }
   } catch (err) {
     console.error(`Failed to archive session for "${username}":`, err);
   }
@@ -154,23 +197,34 @@ export async function handleSessionEnd(ws: WebSocket, msg: WsSessionMessage): Pr
   updateSessionData(username, msg.sessionData);
 
   await archiveSession(username, msg.sessionData);
-  removeSession(username);
+  // Clear the finished session's data but keep the connection's authenticated state intact:
+  // the plugin can resume this same splash (its resume window) on the same still-open socket
+  // by sending a fresh SESSION_START without re-AUTHing, and that must still resolve via
+  // getSessionForSocket() rather than being silently dropped because the whole record for this
+  // connection was torn down.
+  clearSessionData(username);
   triggerEmbedUpdate();
   send(ws, { type: 'ACK' });
 }
 
 /**
  * Called when a WebSocket connection closes.
- * The session is kept in memory rather than archived immediately, since the
- * client typically reconnects (network blip, client restart) and resumes the
- * same splash session. It's only archived via an explicit SESSION_END, or by
- * the inactivity sweep if the client never comes back.
+ * A session still in progress is kept in memory rather than archived immediately, since the
+ * client typically reconnects (network blip, client restart) and resumes the same splash
+ * session. It's only archived via an explicit SESSION_END, or by the inactivity sweep if the
+ * client never comes back. If no session is in progress (already finalized via SESSION_END,
+ * or never started), there is nothing worth preserving across a reconnect, so the entry is
+ * removed now rather than lingering — the inactivity sweep only clears entries that still have
+ * session data, so an idle authenticated placeholder would otherwise never be cleaned up.
  */
 export async function handleDisconnect(ws: WebSocket): Promise<void> {
   const state = getSessionForSocket(ws);
   if (!state) return;
 
   console.log(`WS disconnected for "${state.username}"`);
+  if (state.sessionData === null) {
+    removeSession(state.username);
+  }
   triggerEmbedUpdate();
 }
 
@@ -268,32 +322,6 @@ function getSessionForSocket(ws: WebSocket) {
   return null;
 }
 
-let embedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingAnnounce = false;
-
-function scheduleEmbedUpdate(announce: boolean): void {
-  if (announce) pendingAnnounce = true;
-  if (embedDebounceTimer) clearTimeout(embedDebounceTimer);
-  embedDebounceTimer = setTimeout(() => {
-    const sessions = getActiveSessions();
-    if (pendingAnnounce) {
-      announceNewSession(sessions);
-    } else {
-      updateActiveSessionsEmbed(sessions);
-    }
-    pendingAnnounce = false;
-    embedDebounceTimer = null;
-  }, 2000);
-}
-
 function triggerEmbedUpdate(): void {
-  scheduleEmbedUpdate(false);
-}
-
-// A new session starting gets a divider + fresh message rather than an
-// in-place edit, so it's visually distinct from routine updates. If a
-// regular update was already pending, this upgrades it to an announce so the
-// divider still lands (rather than debouncing it away).
-function triggerEmbedAnnounce(): void {
-  scheduleEmbedUpdate(true);
+  updateActiveSessionsEmbed(getActiveSessions());
 }
