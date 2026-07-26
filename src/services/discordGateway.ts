@@ -16,16 +16,42 @@ function getWebhookClient(): WebhookClient | null {
 
 // ── Active session embed update ───────────────────────────────────────────────
 
-let embedDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+// How often the single active-sessions message gets edited, in ms. Configurable
+// via env so it can be tuned without a code change; defaults within the
+// 15-30s range Discord rate limits comfortably tolerate.
+const EMBED_UPDATE_INTERVAL_MS = Number(process.env.DISCORD_EMBED_UPDATE_INTERVAL_MS) || 20_000;
 
+let lastEmbedUpdate = 0;
+let pendingSessions: ActiveSessionState[] | null = null;
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Throttled update of the single active-sessions message: edits happen at
+ * most once per EMBED_UPDATE_INTERVAL_MS, but the most recent session state
+ * always gets flushed on the trailing edge so nothing is lost between edits.
+ */
 export function updateActiveSessionsEmbed(sessions: ActiveSessionState[]): void {
   if (!WEBHOOK_URL) return;
 
-  if (embedDebounceTimer) clearTimeout(embedDebounceTimer);
-  embedDebounceTimer = setTimeout(() => {
+  const now = Date.now();
+  const elapsed = now - lastEmbedUpdate;
+
+  if (elapsed >= EMBED_UPDATE_INTERVAL_MS) {
+    lastEmbedUpdate = now;
     void patchActiveEmbed(sessions);
-    embedDebounceTimer = null;
-  }, 2000);
+    return;
+  }
+
+  pendingSessions = sessions;
+  if (pendingTimer) return;
+
+  pendingTimer = setTimeout(() => {
+    pendingTimer = null;
+    lastEmbedUpdate = Date.now();
+    const toSend = pendingSessions;
+    pendingSessions = null;
+    if (toSend) void patchActiveEmbed(toSend);
+  }, EMBED_UPDATE_INTERVAL_MS - elapsed);
 }
 
 async function patchActiveEmbed(sessions: ActiveSessionState[]): Promise<void> {
@@ -62,8 +88,9 @@ function buildActiveSessionsEmbed(sessions: ActiveSessionState[]): EmbedBuilder 
   const now = Date.now();
 
   const embed = new EmbedBuilder()
-    .setTitle('🐠 Active Splashers')
+    .setTitle('Active Splashers')
     .setColor(0x3498db)
+    .setThumbnail('https://cdn.discordapp.com/icons/1489687499981979741/c99d3edc2be96bb7a18673a62a3561b8.webp?size=80&quality=lossless')
     .setFooter({ text: `Splash Helper • ${sessions.length} active` })
     .setTimestamp();
 
@@ -77,7 +104,7 @@ function buildActiveSessionsEmbed(sessions: ActiveSessionState[]): EmbedBuilder 
 
       embed.addFields({
         name: `${d.playerName} — World ${d.world}`,
-        value: `Spell: ${d.spell} | Players: ${d.highestPlayerCount} | Duration: ${duration}`,
+        value: `Spell: ${d.spell} | Players: ${d.averagePlayerCount} avg | Duration: ${duration}`,
         inline: false,
       });
     }
