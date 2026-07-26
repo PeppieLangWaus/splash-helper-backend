@@ -2,7 +2,30 @@
 import { requireAuth } from '../middleware/auth';
 import { ArchivedSession } from '../models/ArchivedSession';
 import { User } from '../models/User';
+import { Community } from '../models/Community';
+import { JwtPayload } from '../types';
 import { getAll as getActiveSessions } from '../websocket/sessionManager';
+
+/**
+ * A requester can view a target user's archived data if they are an admin,
+ * are requesting their own data, or own a community that the target belongs to.
+ */
+async function canAccessSplasherData(requester: JwtPayload, targetUsername: string): Promise<boolean> {
+  if (requester.isAdmin) return true;
+  if (requester.sub === targetUsername) return true;
+
+  const [requesterUser, targetUser] = await Promise.all([
+    User.findOne({ username: requester.sub }, { _id: 1 }).lean(),
+    User.findOne({ username: targetUsername }, { _id: 1 }).lean(),
+  ]);
+  if (!requesterUser || !targetUser) return false;
+
+  const ownedCommunity = await Community.findOne({
+    ownerIds: requesterUser._id,
+    memberUserIds: targetUser._id,
+  }).lean();
+  return !!ownedCommunity;
+}
 
 const router = Router();
 
@@ -32,7 +55,7 @@ router.get('/:username', requireAuth, async (req: Request, res: Response): Promi
   const { username } = req.params;
   const requester = req.user!;
 
-  if (!requester.isAdmin && requester.sub !== username) {
+  if (!(await canAccessSplasherData(requester, username))) {
     res.status(403).json({ error: 'Access denied' });
     return;
   }

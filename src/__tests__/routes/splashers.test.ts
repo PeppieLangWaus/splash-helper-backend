@@ -5,6 +5,7 @@ import { connectTestDB, disconnectTestDB, clearCollections } from '../testDb';
 import { createTestApp } from '../testApp';
 import { User } from '../../models/User';
 import { ArchivedSession } from '../../models/ArchivedSession';
+import { Community } from '../../models/Community';
 import { makeSessionData } from '../fixtures';
 import * as sessionManager from '../../websocket/sessionManager';
 import { WebSocket } from 'ws';
@@ -118,5 +119,39 @@ describe('GET /api/splashers/:username', () => {
       .get('/api/splashers/nobody')
       .set('Authorization', `Bearer ${makeToken('nobody')}`);
     expect(res.status).toBe(404);
+  });
+
+  it('allows a community owner to access an assigned splasher\'s data', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    const owner = await User.create({ username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true, communityEligible: true });
+    const splasher = await User.create({ username: 'carol', passwordHash: hash, token: 't2', setupLinkUsed: true });
+    await Community.create({ name: 'Alice Community', ownerIds: [owner._id], memberUserIds: [splasher._id] });
+
+    await ArchivedSession.create({
+      sessionId: 's3',
+      createdTimestamp: Date.now(),
+      finalizedTimestamp: Date.now() + 1000,
+      userId: splasher._id,
+      username: 'carol',
+      session: makeSessionData({ playerName: 'carol' }),
+    });
+
+    const res = await request(app)
+      .get('/api/splashers/carol')
+      .set('Authorization', `Bearer ${makeToken('alice')}`);
+    expect(res.status).toBe(200);
+    expect(res.body.sessions).toHaveLength(1);
+  });
+
+  it('denies access to a splasher not assigned to the requester\'s community', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    const owner = await User.create({ username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true, communityEligible: true });
+    await User.create({ username: 'carol', passwordHash: hash, token: 't2', setupLinkUsed: true });
+    await Community.create({ name: 'Alice Community', ownerIds: [owner._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .get('/api/splashers/carol')
+      .set('Authorization', `Bearer ${makeToken('alice')}`);
+    expect(res.status).toBe(403);
   });
 });

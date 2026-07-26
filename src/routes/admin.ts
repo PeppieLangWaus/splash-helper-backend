@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { requireAdmin } from '../middleware/auth';
 import { User } from '../models/User';
 import { ArchivedSession } from '../models/ArchivedSession';
+import { Community } from '../models/Community';
 
 const router = Router();
 
@@ -81,6 +82,97 @@ router.delete('/sessions/:sessionId', async (req: Request, res: Response): Promi
     return;
   }
   res.json({ message: `Session "${sessionId}" deleted` });
+});
+
+/**
+ * POST /api/admin/community-eligibility/:username
+ * Toggles whether a user is allowed to set up a community.
+ */
+router.post('/community-eligibility/:username', async (req: Request, res: Response): Promise<void> => {
+  const { username } = req.params;
+  const user = await User.findOne({ username });
+  if (!user) {
+    res.status(404).json({ error: `User "${username}" not found` });
+    return;
+  }
+
+  user.communityEligible = !user.communityEligible;
+  await user.save();
+  res.json({
+    message: `User "${username}" communityEligible set to ${user.communityEligible}`,
+    communityEligible: user.communityEligible,
+  });
+});
+
+/**
+ * GET /api/admin/communities
+ * Returns all communities.
+ */
+router.get('/communities', async (_req: Request, res: Response): Promise<void> => {
+  const communities = await Community.find({}).lean();
+  res.json({ communities });
+});
+
+/**
+ * DELETE /api/admin/communities/:communityId
+ * Deletes a community. Does not delete its member/owner Users.
+ */
+router.delete('/communities/:communityId', async (req: Request, res: Response): Promise<void> => {
+  const { communityId } = req.params;
+  const result = await Community.findByIdAndDelete(communityId);
+  if (!result) {
+    res.status(404).json({ error: 'Community not found' });
+    return;
+  }
+  res.json({ message: 'Community deleted' });
+});
+
+/**
+ * POST /api/admin/communities/:communityId/members/:username
+ * Assigns a splasher to a community.
+ */
+router.post('/communities/:communityId/members/:username', async (req: Request, res: Response): Promise<void> => {
+  const { communityId, username } = req.params;
+  const community = await Community.findById(communityId);
+  if (!community) {
+    res.status(404).json({ error: 'Community not found' });
+    return;
+  }
+
+  const user = await User.findOne({ username }, { _id: 1 }).lean();
+  if (!user) {
+    res.status(404).json({ error: `User "${username}" not found` });
+    return;
+  }
+
+  if (!community.memberUserIds.some((id) => id.equals(user._id))) {
+    community.memberUserIds.push(user._id);
+    await community.save();
+  }
+  res.json({ message: `User "${username}" assigned to community "${community.name}"` });
+});
+
+/**
+ * DELETE /api/admin/communities/:communityId/members/:username
+ * Removes a splasher from a community.
+ */
+router.delete('/communities/:communityId/members/:username', async (req: Request, res: Response): Promise<void> => {
+  const { communityId, username } = req.params;
+  const community = await Community.findById(communityId);
+  if (!community) {
+    res.status(404).json({ error: 'Community not found' });
+    return;
+  }
+
+  const user = await User.findOne({ username }, { _id: 1 }).lean();
+  if (!user) {
+    res.status(404).json({ error: `User "${username}" not found` });
+    return;
+  }
+
+  community.memberUserIds = community.memberUserIds.filter((id) => !id.equals(user._id));
+  await community.save();
+  res.json({ message: `User "${username}" removed from community "${community.name}"` });
 });
 
 export default router;

@@ -100,6 +100,7 @@ export interface ActiveSessionState {
 export interface JwtPayload {
   sub: string;   // username
   isAdmin: boolean;
+  communityEligible: boolean;
   iat?: number;
   exp?: number;
 }

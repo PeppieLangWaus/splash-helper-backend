@@ -5,6 +5,7 @@ import { connectTestDB, disconnectTestDB, clearCollections } from '../testDb';
 import { createTestApp } from '../testApp';
 import { User } from '../../models/User';
 import { ArchivedSession } from '../../models/ArchivedSession';
+import { Community } from '../../models/Community';
 import { makeSessionData } from '../fixtures';
 
 const app = createTestApp();
@@ -192,5 +193,86 @@ describe('DELETE /api/admin/sessions/:sessionId', () => {
       .delete('/api/admin/sessions/nope')
       .set('Authorization', `Bearer ${makeToken('admin', true)}`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /api/admin/community-eligibility/:username', () => {
+  it('toggles communityEligible for the user', async () => {
+    await createUser('alice');
+
+    const res1 = await request(app)
+      .post('/api/admin/community-eligibility/alice')
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(res1.status).toBe(200);
+    expect(res1.body.communityEligible).toBe(true);
+
+    const res2 = await request(app)
+      .post('/api/admin/community-eligibility/alice')
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(res2.status).toBe(200);
+    expect(res2.body.communityEligible).toBe(false);
+  });
+
+  it('returns 404 for non-existent user', async () => {
+    const res = await request(app)
+      .post('/api/admin/community-eligibility/nobody')
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 403 for non-admin user', async () => {
+    await createUser('alice');
+    const res = await request(app)
+      .post('/api/admin/community-eligibility/alice')
+      .set('Authorization', `Bearer ${makeToken('alice', false)}`);
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('community member assignment', () => {
+  it('assigns and removes a splasher from a community', async () => {
+    const owner = await createUser('alice');
+    const splasher = await createUser('carol');
+    const community = await Community.create({ name: 'Test Community', ownerIds: [owner._id], memberUserIds: [] });
+
+    const assignRes = await request(app)
+      .post(`/api/admin/communities/${community._id}/members/carol`)
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(assignRes.status).toBe(200);
+
+    let updated = await Community.findById(community._id).lean();
+    expect(updated!.memberUserIds.map((id) => id.toString())).toContain(splasher._id.toString());
+
+    const removeRes = await request(app)
+      .delete(`/api/admin/communities/${community._id}/members/carol`)
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(removeRes.status).toBe(200);
+
+    updated = await Community.findById(community._id).lean();
+    expect(updated!.memberUserIds).toHaveLength(0);
+  });
+
+  it('returns 404 when assigning an unknown user', async () => {
+    const owner = await createUser('alice');
+    const community = await Community.create({ name: 'Test Community', ownerIds: [owner._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .post(`/api/admin/communities/${community._id}/members/nobody`)
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/admin/communities', () => {
+  it('returns all communities', async () => {
+    const owner = await createUser('alice');
+    await Community.create({ name: 'Community A', ownerIds: [owner._id], memberUserIds: [] });
+    await Community.create({ name: 'Community B', ownerIds: [owner._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .get('/api/admin/communities')
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(res.status).toBe(200);
+    expect(res.body.communities).toHaveLength(2);
   });
 });
