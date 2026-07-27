@@ -3,9 +3,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { User } from '../models/User';
 import { SetupLinkJwtPayload } from '../types';
+import { requireEnv } from '../config/env';
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production';
+const JWT_SECRET = requireEnv('JWT_SECRET');
 const SETUP_LINK_SECRET = process.env.SETUP_LINK_SECRET ?? JWT_SECRET;
 const SETUP_LINK_EXPIRY = (process.env.SETUP_LINK_EXPIRY ?? '24h') as `${number}${'s'|'m'|'h'|'d'}` | undefined;
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
@@ -85,7 +86,7 @@ router.post('/setup/:setupToken', async (req: Request, res: Response): Promise<v
 
   const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible };
   const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ message: 'Account set up successfully', token, username: user.username, communityEligible: user.communityEligible });
+  res.json({ message: 'Account set up successfully', token, username: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible });
 });
 
 /**

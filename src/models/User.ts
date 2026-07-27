@@ -7,6 +7,10 @@ export interface IUser extends Document {
   isAdmin: boolean;
   setupLinkUsed: boolean;
   communityEligible: boolean; // admin-granted: allowed to set up a community
+  /** Personal Discord webhooks, set by the splasher themselves or by a community owner
+   *  on their behalf. Additive with any community webhook(s) the splasher belongs to. */
+  discordActiveWebhookUrl?: string;
+  discordHistoryWebhookUrl?: string;
   createdAt: Date;
 }
 
@@ -18,6 +22,8 @@ const UserSchema = new Schema<IUser>(
     isAdmin: { type: Boolean, default: false },
     setupLinkUsed: { type: Boolean, default: false },
     communityEligible: { type: Boolean, default: false },
+    discordActiveWebhookUrl: { type: String },
+    discordHistoryWebhookUrl: { type: String },
   },
   { timestamps: { createdAt: 'createdAt', updatedAt: false } },
 );

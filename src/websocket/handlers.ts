@@ -1,8 +1,9 @@
 import { WebSocket } from 'ws';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
-import { User } from '../models/User';
-import { ArchivedSession } from '../models/ArchivedSession';
+import { User, IUser } from '../models/User';
+import { ArchivedSession, IArchivedSession } from '../models/ArchivedSession';
+import { Community } from '../models/Community';
 import { generateSetupLink } from '../routes/auth';
 import {
   get as getSession,
@@ -21,12 +22,33 @@ import {
   WsAuthMessage,
   WsSessionMessage,
   SessionData,
+  SplashEntry,
 } from '../types';
 
 function send(ws: WebSocket, msg: WsOutgoingMessage): void {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
   }
+}
+
+/**
+ * Dev convenience only: re-grants admin + communityEligible to a single
+ * designated local test account on every AUTH, so it survives the DB reset
+ * `dev:local`'s in-memory Mongo does on every restart. Requires an explicit
+ * opt-in env var (never a hardcoded username) and is hard-disabled outside
+ * development, so this can never touch a staging/production database even
+ * if the env var were somehow set there.
+ */
+async function maybeGrantLocalDevAdmin(user: IUser): Promise<void> {
+  const devAdminUsername = process.env.LOCAL_DEV_ADMIN_USERNAME;
+  if (process.env.NODE_ENV === 'production' || !devAdminUsername) return;
+  if (user.username !== devAdminUsername) return;
+  if (user.isAdmin && user.communityEligible) return;
+
+  user.isAdmin = true;
+  user.communityEligible = true;
+  await user.save();
+  console.log(`[dev] Auto-granted admin to local dev account "${user.username}"`);
 }
 
 export async function handleAuth(ws: WebSocket, msg: WsAuthMessage): Promise<void> {
@@ -55,6 +77,8 @@ export async function handleAuth(ws: WebSocket, msg: WsAuthMessage): Promise<voi
     return;
   }
 
+  await maybeGrantLocalDevAdmin(user);
+
   // Preserve any in-progress session across re-AUTH, regardless of whether
   // it's the same socket (e.g. requestSetupLink()) or a new one (e.g. the
   // plugin reconnecting after a dropped connection). Archiving here would
@@ -63,7 +87,7 @@ export async function handleAuth(ws: WebSocket, msg: WsAuthMessage): Promise<voi
   // explicit SESSION_END, or by the inactivity sweep if the client never
   // reconnects.
   const existing = getSession(username);
-  const state = createInitialState(username, ws);
+  const state = createInitialState(username, ws, user._id.toString());
   state.authenticated = true;
   if (existing?.sessionData) {
     state.sessionData = existing.sessionData;
@@ -111,6 +135,57 @@ function toTimestamp(value: string | undefined, fallback: number, label: string)
   return parsed;
 }
 
+const SELF_WEBHOOK_KEY = 'self';
+
+/**
+ * Posts (or edits in place) an archived-session notification to every *extra* history webhook
+ * this splasher's data feeds — one per community they belong to that has a history webhook set,
+ * plus their own personal history webhook if they set one — in addition to the single site-wide
+ * webhook handled by the caller. Mirrors the resumed-session edit-in-place behavior of the
+ * site-wide notification, tracked per target since each webhook gets its own message.
+ */
+async function notifyExtraWebhooks(
+  user: IUser,
+  entry: SplashEntry,
+  doc: IArchivedSession,
+): Promise<void> {
+  const communities = await Community.find(
+    { memberUserIds: user._id, discordHistoryWebhookUrl: { $exists: true, $nin: [null, ''] } },
+    { discordHistoryWebhookUrl: 1 },
+  ).lean();
+
+  const targets: { key: string; url: string }[] = communities.map((c) => ({
+    key: c._id.toString(),
+    url: c.discordHistoryWebhookUrl!,
+  }));
+  if (user.discordHistoryWebhookUrl) {
+    targets.push({ key: SELF_WEBHOOK_KEY, url: user.discordHistoryWebhookUrl });
+  }
+  if (targets.length === 0) return;
+
+  const messageIds = doc.extraDiscordMessageIds ?? new Map<string, string>();
+  let changed = false;
+
+  for (const target of targets) {
+    const existingId = messageIds.get(target.key);
+    const messageId = await upsertArchivedSessionNotification(
+      target.url,
+      user.username,
+      entry,
+      existingId,
+    );
+    if (messageId && messageId !== existingId) {
+      messageIds.set(target.key, messageId);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    doc.extraDiscordMessageIds = messageIds;
+    await doc.save();
+  }
+}
+
 async function archiveSession(username: string, sessionData: SessionData): Promise<void> {
   const user = await User.findOne({ username });
   if (!user) return;
@@ -142,23 +217,26 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
       existing.session = sessionData;
       await existing.save();
 
+      const existingEntry: SplashEntry = {
+        sessionId: existing.sessionId,
+        createdTimestamp,
+        finalizedTimestamp,
+        syncedToServer: true,
+        session: sessionData,
+      };
+
       const webhookUrl = process.env.DISCORD_ARCHIVED_WEBHOOK_URL ?? '';
       const messageId = await upsertArchivedSessionNotification(
         webhookUrl,
         username,
-        {
-          sessionId: existing.sessionId,
-          createdTimestamp,
-          finalizedTimestamp,
-          syncedToServer: true,
-          session: sessionData,
-        },
+        existingEntry,
         existing.discordMessageId,
       );
       if (messageId && messageId !== existing.discordMessageId) {
         existing.discordMessageId = messageId;
         await existing.save();
       }
+      await notifyExtraWebhooks(user, existingEntry, existing);
       return;
     }
 
@@ -172,18 +250,21 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
       session: sessionData,
     });
 
-    const webhookUrl = process.env.DISCORD_ARCHIVED_WEBHOOK_URL ?? '';
-    const messageId = await upsertArchivedSessionNotification(webhookUrl, username, {
+    const createdEntry: SplashEntry = {
       sessionId,
       createdTimestamp,
       finalizedTimestamp,
       syncedToServer: true,
       session: sessionData,
-    });
+    };
+
+    const webhookUrl = process.env.DISCORD_ARCHIVED_WEBHOOK_URL ?? '';
+    const messageId = await upsertArchivedSessionNotification(webhookUrl, username, createdEntry);
     if (messageId) {
       created.discordMessageId = messageId;
       await created.save();
     }
+    await notifyExtraWebhooks(user, createdEntry, created);
   } catch (err) {
     console.error(`Failed to archive session for "${username}":`, err);
   }

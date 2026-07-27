@@ -1,94 +1,221 @@
 import { WebhookClient, EmbedBuilder } from 'discord.js';
 import { ActiveSessionState } from '../types';
+import { Community } from '../models/Community';
+import { User } from '../models/User';
 
 const WEBHOOK_URL = process.env.DISCORD_ACTIVE_WEBHOOK_URL ?? '';
 
-let webhookClient: WebhookClient | null = null;
-let activeMessageId: string | null = null;
+// How often a single active-sessions message gets edited, in ms. Configurable
+// via env so it can be tuned without a code change; defaults within the
+// 15-30s range Discord rate limits comfortably tolerate. Shared by the
+// site-wide embed and every per-community/per-splasher embed.
+const EMBED_UPDATE_INTERVAL_MS = Number(process.env.DISCORD_EMBED_UPDATE_INTERVAL_MS) || 20_000;
 
-function getWebhookClient(): WebhookClient | null {
-  if (!WEBHOOK_URL) return null;
-  if (!webhookClient) {
-    webhookClient = new WebhookClient({ url: WEBHOOK_URL });
+// How long a community's/splasher's { webhookUrl, members } snapshot is trusted before
+// re-querying the DB. Session updates can arrive many times a second across many
+// connections, so this keeps that off the hot path. (Number() || default would treat an
+// explicit 0 as "unset", so this is checked for explicitly — tests rely on being able to
+// disable the cache entirely.)
+const CONFIG_CACHE_TTL_MS = process.env.DISCORD_COMMUNITY_CACHE_TTL_MS !== undefined
+  ? Number(process.env.DISCORD_COMMUNITY_CACHE_TTL_MS)
+  : 15_000;
+
+interface EmbedTarget {
+  title: string;
+  webhookUrl: string;
+}
+
+interface EmbedState {
+  target: EmbedTarget;
+  client: WebhookClient;
+  activeMessageId: string | null;
+  lastEmbedUpdate: number;
+  pendingSessions: ActiveSessionState[] | null;
+  pendingTimer: ReturnType<typeof setTimeout> | null;
+}
+
+function createEmbedState(target: EmbedTarget): EmbedState {
+  return {
+    target,
+    client: new WebhookClient({ url: target.webhookUrl }),
+    activeMessageId: null,
+    lastEmbedUpdate: 0,
+    pendingSessions: null,
+    pendingTimer: null,
+  };
+}
+
+const globalState: EmbedState | null = WEBHOOK_URL
+  ? createEmbedState({ title: 'Active Splashers', webhookUrl: WEBHOOK_URL })
+  : null;
+
+// One throttled embed state per community/splasher that currently has an active-sessions
+// webhook configured, keyed by the Community/User _id (as a string).
+const communityStates = new Map<string, EmbedState>();
+const splasherStates = new Map<string, EmbedState>();
+
+interface WebhookConfig {
+  id: string;
+  webhookUrl: string;
+}
+
+interface CommunityWebhookConfig extends WebhookConfig {
+  name: string;
+  memberIds: Set<string>;
+}
+
+interface SplasherWebhookConfig extends WebhookConfig {
+  username: string;
+}
+
+let communityConfigCache: CommunityWebhookConfig[] = [];
+let splasherConfigCache: SplasherWebhookConfig[] = [];
+let configCacheAt = 0;
+
+async function refreshConfigsIfStale(): Promise<void> {
+  const now = Date.now();
+  if (now - configCacheAt < CONFIG_CACHE_TTL_MS) return;
+  configCacheAt = now;
+
+  try {
+    const [communities, splashers] = await Promise.all([
+      Community.find(
+        { discordActiveWebhookUrl: { $exists: true, $nin: [null, ''] } },
+        { name: 1, discordActiveWebhookUrl: 1, memberUserIds: 1 },
+      ).lean(),
+      User.find(
+        { discordActiveWebhookUrl: { $exists: true, $nin: [null, ''] } },
+        { username: 1, discordActiveWebhookUrl: 1 },
+      ).lean(),
+    ]);
+    communityConfigCache = communities.map((c) => ({
+      id: c._id.toString(),
+      name: c.name,
+      webhookUrl: c.discordActiveWebhookUrl as string,
+      memberIds: new Set(c.memberUserIds.map((m) => m.toString())),
+    }));
+    splasherConfigCache = splashers.map((u) => ({
+      id: u._id.toString(),
+      username: u.username,
+      webhookUrl: u.discordActiveWebhookUrl as string,
+    }));
+  } catch (err) {
+    console.error('Failed to load active-sessions webhook configs:', (err as Error).message);
   }
-  return webhookClient;
+}
+
+/**
+ * Creates/reuses one EmbedState per config and drops states for configs that no longer
+ * exist (webhook cleared, or the community/splasher itself was deleted) so a stale config
+ * doesn't keep editing a now-orphaned message.
+ */
+function reconcileStates<T extends WebhookConfig>(
+  states: Map<string, EmbedState>,
+  configs: T[],
+  titleFor: (config: T) => string,
+): void {
+  const configuredIds = new Set(configs.map((c) => c.id));
+  for (const id of states.keys()) {
+    if (!configuredIds.has(id)) states.delete(id);
+  }
+
+  for (const config of configs) {
+    const existing = states.get(config.id);
+    if (!existing || existing.target.webhookUrl !== config.webhookUrl) {
+      states.set(config.id, createEmbedState({ title: titleFor(config), webhookUrl: config.webhookUrl }));
+    }
+  }
 }
 
 // ── Active session embed update ───────────────────────────────────────────────
 
-// How often the single active-sessions message gets edited, in ms. Configurable
-// via env so it can be tuned without a code change; defaults within the
-// 15-30s range Discord rate limits comfortably tolerate.
-const EMBED_UPDATE_INTERVAL_MS = Number(process.env.DISCORD_EMBED_UPDATE_INTERVAL_MS) || 20_000;
-
-let lastEmbedUpdate = 0;
-let pendingSessions: ActiveSessionState[] | null = null;
-let pendingTimer: ReturnType<typeof setTimeout> | null = null;
-
 /**
- * Throttled update of the single active-sessions message: edits happen at
- * most once per EMBED_UPDATE_INTERVAL_MS, but the most recent session state
- * always gets flushed on the trailing edge so nothing is lost between edits.
+ * Throttled update of every active-sessions message this splasher pool feeds: the single
+ * site-wide message (if DISCORD_ACTIVE_WEBHOOK_URL is set), one message per community that
+ * has its own active-sessions webhook configured (scoped to that community's members), and
+ * one personal message per splasher who set their own active-sessions webhook (scoped to
+ * just their own session). Each message is edited at most once per EMBED_UPDATE_INTERVAL_MS,
+ * with the most recent session state always flushed on the trailing edge.
  */
 export function updateActiveSessionsEmbed(sessions: ActiveSessionState[]): void {
-  if (!WEBHOOK_URL) return;
+  if (globalState) {
+    scheduleEmbedUpdate(globalState, sessions);
+  }
+  void updateScopedEmbeds(sessions);
+}
 
+async function updateScopedEmbeds(sessions: ActiveSessionState[]): Promise<void> {
+  await refreshConfigsIfStale();
+
+  reconcileStates(communityStates, communityConfigCache, (c) => `Active Splashers — ${c.name}`);
+  for (const config of communityConfigCache) {
+    const state = communityStates.get(config.id)!;
+    const memberSessions = sessions.filter((s) => config.memberIds.has(s.userId));
+    scheduleEmbedUpdate(state, memberSessions);
+  }
+
+  reconcileStates(splasherStates, splasherConfigCache, (c) => `Active Session — ${c.username}`);
+  for (const config of splasherConfigCache) {
+    const state = splasherStates.get(config.id)!;
+    const ownSession = sessions.filter((s) => s.userId === config.id);
+    scheduleEmbedUpdate(state, ownSession);
+  }
+}
+
+function scheduleEmbedUpdate(state: EmbedState, sessions: ActiveSessionState[]): void {
   const now = Date.now();
-  const elapsed = now - lastEmbedUpdate;
+  const elapsed = now - state.lastEmbedUpdate;
 
   if (elapsed >= EMBED_UPDATE_INTERVAL_MS) {
-    lastEmbedUpdate = now;
-    void patchActiveEmbed(sessions);
+    state.lastEmbedUpdate = now;
+    void patchActiveEmbed(state, sessions);
     return;
   }
 
-  pendingSessions = sessions;
-  if (pendingTimer) return;
+  state.pendingSessions = sessions;
+  if (state.pendingTimer) return;
 
-  pendingTimer = setTimeout(() => {
-    pendingTimer = null;
-    lastEmbedUpdate = Date.now();
-    const toSend = pendingSessions;
-    pendingSessions = null;
-    if (toSend) void patchActiveEmbed(toSend);
+  state.pendingTimer = setTimeout(() => {
+    state.pendingTimer = null;
+    state.lastEmbedUpdate = Date.now();
+    const toSend = state.pendingSessions;
+    state.pendingSessions = null;
+    if (toSend) void patchActiveEmbed(state, toSend);
   }, EMBED_UPDATE_INTERVAL_MS - elapsed);
 }
 
-async function patchActiveEmbed(sessions: ActiveSessionState[]): Promise<void> {
-  const client = getWebhookClient();
-  if (!client) return;
-
+async function patchActiveEmbed(state: EmbedState, sessions: ActiveSessionState[]): Promise<void> {
   const activeSessions = sessions.filter((s) => s.authenticated && s.sessionData !== null);
-  const embed = buildActiveSessionsEmbed(activeSessions);
+  const embed = buildActiveSessionsEmbed(state.target.title, activeSessions);
 
   try {
-    if (activeMessageId) {
+    if (state.activeMessageId) {
       // Edit the existing message
-      await client.editMessage(activeMessageId, { embeds: [embed] });
+      await state.client.editMessage(state.activeMessageId, { embeds: [embed] });
     } else {
       // Send a new message and remember its ID
-      const msg = await client.send({ embeds: [embed] });
-      activeMessageId = msg.id;
-      console.log(`Discord active sessions message created: ${activeMessageId}`);
+      const msg = await state.client.send({ embeds: [embed] });
+      state.activeMessageId = msg.id;
+      console.log(`Discord active sessions message created (${state.target.title}): ${state.activeMessageId}`);
     }
   } catch (err: unknown) {
     const apiErr = err as { code?: number };
-    if (apiErr.code === 10008 && activeMessageId) {
+    if (apiErr.code === 10008 && state.activeMessageId) {
       // Unknown Message — the old message was deleted; send a new one
-      console.warn('Active sessions message was deleted, sending a new one');
-      activeMessageId = null;
-      await patchActiveEmbed(sessions);
+      console.warn(`Active sessions message was deleted (${state.target.title}), sending a new one`);
+      state.activeMessageId = null;
+      await patchActiveEmbed(state, sessions);
     } else {
-      console.error('Failed to update active sessions embed:', (err as Error).message);
+      console.error(`Failed to update active sessions embed (${state.target.title}):`, (err as Error).message);
     }
   }
 }
 
-function buildActiveSessionsEmbed(sessions: ActiveSessionState[]): EmbedBuilder {
+function buildActiveSessionsEmbed(title: string, sessions: ActiveSessionState[]): EmbedBuilder {
   const now = Date.now();
 
   const embed = new EmbedBuilder()
-    .setTitle('Active Splashers')
+    .setTitle(title)
     .setColor(0x3498db)
     .setThumbnail('https://cdn.discordapp.com/icons/1489687499981979741/c99d3edc2be96bb7a18673a62a3561b8.webp?size=80&quality=lossless')
     .setFooter({ text: `Splash Helper • ${sessions.length} active` })
