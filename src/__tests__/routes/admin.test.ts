@@ -263,6 +263,67 @@ describe('community member assignment', () => {
   });
 });
 
+describe('POST /api/admin/communities/:communityId/members (bulk)', () => {
+  it('assigns multiple splashers to a community, skipping unknown usernames', async () => {
+    const owner = await createUser('alice');
+    const carol = await createUser('carol');
+    const dave = await createUser('dave');
+    const community = await Community.create({ name: 'Test Community', ownerIds: [owner._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .post(`/api/admin/communities/${community._id}/members`)
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`)
+      .send({ usernames: ['carol', 'dave', 'nobody'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.notFound).toEqual(['nobody']);
+
+    const updated = await Community.findById(community._id).lean();
+    const ids = updated!.memberUserIds.map((id) => id.toString());
+    expect(ids).toContain(carol._id.toString());
+    expect(ids).toContain(dave._id.toString());
+    expect(ids).toHaveLength(2);
+  });
+
+  it('does not duplicate members already assigned', async () => {
+    const owner = await createUser('alice');
+    const carol = await createUser('carol');
+    const community = await Community.create({
+      name: 'Test Community',
+      ownerIds: [owner._id],
+      memberUserIds: [carol._id],
+    });
+
+    const res = await request(app)
+      .post(`/api/admin/communities/${community._id}/members`)
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`)
+      .send({ usernames: ['carol'] });
+
+    expect(res.status).toBe(200);
+    const updated = await Community.findById(community._id).lean();
+    expect(updated!.memberUserIds).toHaveLength(1);
+  });
+
+  it('returns 400 for an empty usernames array', async () => {
+    const owner = await createUser('alice');
+    const community = await Community.create({ name: 'Test Community', ownerIds: [owner._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .post(`/api/admin/communities/${community._id}/members`)
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`)
+      .send({ usernames: [] });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 404 for an unknown community', async () => {
+    const res = await request(app)
+      .post('/api/admin/communities/000000000000000000000000/members')
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`)
+      .send({ usernames: ['carol'] });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('GET /api/admin/communities', () => {
   it('returns all communities', async () => {
     const owner = await createUser('alice');
