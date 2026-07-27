@@ -11,6 +11,10 @@ export interface IArchivedSession extends Document {
   /** Discord message id of the archived-session notification, so a resumed session that
    *  finalizes again can edit the existing post in place instead of adding a new one. */
   discordMessageId?: string;
+  /** Same idea as discordMessageId, but for every *extra* history webhook this splasher's
+   *  post also goes to: one entry per community the splasher belongs to (keyed by Community
+   *  _id) plus one entry keyed by the literal string 'self' for the splasher's own webhook. */
+  extraDiscordMessageIds?: Map<string, string>;
 }
 
 const SessionDataSchema = new Schema<SessionData>(
@@ -47,6 +51,7 @@ const ArchivedSessionSchema = new Schema<IArchivedSession>(
     username: { type: String, required: true },
     session: { type: SessionDataSchema, required: true },
     discordMessageId: { type: String },
+    extraDiscordMessageIds: { type: Map, of: String },
   },
   { timestamps: false },
 );

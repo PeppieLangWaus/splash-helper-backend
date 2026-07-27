@@ -3,6 +3,34 @@ import { SplashEntry } from '../types';
 
 const DISCORD_EMBED_LIMIT = 10;
 
+const DISCORD_WEBHOOK_URL_PATTERN = /^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+\/?$/;
+
+/** Validates that a string looks like a real Discord webhook URL before it's persisted. */
+export function isValidDiscordWebhookUrl(url: string): boolean {
+  return DISCORD_WEBHOOK_URL_PATTERN.test(url);
+}
+
+export type WebhookFieldUpdate =
+  | { action: 'set'; value: string }
+  | { action: 'clear' }
+  | { action: 'skip' }
+  | { action: 'invalid' };
+
+/**
+ * Interprets one field of a PUT .../webhook request body: field absent from the body
+ * leaves the current value alone ('skip'), present-but-empty clears it ('clear'), a
+ * valid Discord webhook URL sets it ('set'), anything else is rejected ('invalid').
+ */
+export function resolveWebhookField(raw: unknown): WebhookFieldUpdate {
+  if (raw === undefined) return { action: 'skip' };
+  if (typeof raw !== 'string') return { action: 'invalid' };
+
+  const trimmed = raw.trim();
+  if (!trimmed) return { action: 'clear' };
+  if (!isValidDiscordWebhookUrl(trimmed)) return { action: 'invalid' };
+  return { action: 'set', value: trimmed };
+}
+
 // A single sequential queue of async tasks, shared by both the batch notifier and the
 // single-session upsert notifier, so all outgoing requests to a webhook stay ordered
 // (and rate-limit-friendly) regardless of which caller enqueued them.

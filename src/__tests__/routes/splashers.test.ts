@@ -155,3 +155,84 @@ describe('GET /api/splashers/:username', () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe('PUT /api/splashers/:username/webhook', () => {
+  const VALID_WEBHOOK = 'https://discord.com/api/webhooks/123456789/abcDEF-123';
+
+  it('returns 401 without auth token', async () => {
+    await request(app).put('/api/splashers/alice/webhook').send({ activeWebhookUrl: VALID_WEBHOOK }).expect(401);
+  });
+
+  it('allows a splasher to set their own webhooks', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    await User.create({ username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true });
+
+    const res = await request(app)
+      .put('/api/splashers/alice/webhook')
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK, historyWebhookUrl: VALID_WEBHOOK });
+    expect(res.status).toBe(200);
+    expect(res.body.discordActiveWebhookUrl).toBe(VALID_WEBHOOK);
+    expect(res.body.discordHistoryWebhookUrl).toBe(VALID_WEBHOOK);
+
+    const reloaded = await User.findOne({ username: 'alice' }).lean();
+    expect(reloaded!.discordActiveWebhookUrl).toBe(VALID_WEBHOOK);
+  });
+
+  it('denies a splasher setting another splasher\'s webhook without ownership', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    await User.create({ username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true });
+    await User.create({ username: 'bob', passwordHash: hash, token: 't2', setupLinkUsed: true });
+
+    const res = await request(app)
+      .put('/api/splashers/bob/webhook')
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK });
+    expect(res.status).toBe(403);
+  });
+
+  it('allows a community owner to set a member\'s webhook', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    const owner = await User.create({ username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true, communityEligible: true });
+    const splasher = await User.create({ username: 'carol', passwordHash: hash, token: 't2', setupLinkUsed: true });
+    await Community.create({ name: 'Alice Community', ownerIds: [owner._id], memberUserIds: [splasher._id] });
+
+    const res = await request(app)
+      .put('/api/splashers/carol/webhook')
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK });
+    expect(res.status).toBe(200);
+    expect(res.body.discordActiveWebhookUrl).toBe(VALID_WEBHOOK);
+  });
+
+  it('rejects an invalid webhook URL', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    await User.create({ username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true });
+
+    const res = await request(app)
+      .put('/api/splashers/alice/webhook')
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: 'not-a-webhook' });
+    expect(res.status).toBe(400);
+  });
+
+  it('clears a webhook when given an empty value, leaving the other field untouched', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    await User.create({
+      username: 'alice',
+      passwordHash: hash,
+      token: 't1',
+      setupLinkUsed: true,
+      discordActiveWebhookUrl: VALID_WEBHOOK,
+      discordHistoryWebhookUrl: VALID_WEBHOOK,
+    });
+
+    const res = await request(app)
+      .put('/api/splashers/alice/webhook')
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: '' });
+    expect(res.status).toBe(200);
+    expect(res.body.discordActiveWebhookUrl).toBeUndefined();
+    expect(res.body.discordHistoryWebhookUrl).toBe(VALID_WEBHOOK);
+  });
+});

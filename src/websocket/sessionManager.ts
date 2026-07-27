@@ -36,10 +36,11 @@ export function clearSessionData(username: string): void {
   }
 }
 
-export function createInitialState(username: string, ws: WebSocket): ActiveSessionState {
+export function createInitialState(username: string, ws: WebSocket, userId = ''): ActiveSessionState {
   return {
     ws,
     username,
+    userId,
     sessionData: null,
     authenticated: false,
     lastUpdate: Date.now(),

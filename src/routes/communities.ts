@@ -3,6 +3,7 @@ import { requireAuth } from '../middleware/auth';
 import { User } from '../models/User';
 import { Community } from '../models/Community';
 import { ArchivedSession } from '../models/ArchivedSession';
+import { resolveWebhookField } from '../services/discordWebhook';
 
 const router = Router();
 
@@ -106,6 +107,83 @@ router.get('/:communityId/sessions', async (req: Request, res: Response): Promis
 
   const sessions = await ArchivedSession.find({ userId: { $in: community.memberUserIds } }).lean();
   res.json({ sessions });
+});
+
+/**
+ * PUT /api/communities/:communityId/webhook
+ * Body: { activeWebhookUrl?: string | null; historyWebhookUrl?: string | null }
+ * Sets or clears this community's Discord webhooks — one for the active-sessions embed,
+ * one for archived-session history. Either field may be omitted to leave it unchanged.
+ * Owner or admin only.
+ */
+router.put('/:communityId/webhook', async (req: Request, res: Response): Promise<void> => {
+  const community = await loadOwnedCommunity(req, res);
+  if (!community) return;
+
+  const { activeWebhookUrl, historyWebhookUrl } = req.body as {
+    activeWebhookUrl?: unknown;
+    historyWebhookUrl?: unknown;
+  };
+  const activeUpdate = resolveWebhookField(activeWebhookUrl);
+  const historyUpdate = resolveWebhookField(historyWebhookUrl);
+
+  if (activeUpdate.action === 'invalid' || historyUpdate.action === 'invalid') {
+    res.status(400).json({ error: 'Not a valid Discord webhook URL' });
+    return;
+  }
+
+  if (activeUpdate.action === 'set') community.discordActiveWebhookUrl = activeUpdate.value;
+  else if (activeUpdate.action === 'clear') community.discordActiveWebhookUrl = undefined;
+
+  if (historyUpdate.action === 'set') community.discordHistoryWebhookUrl = historyUpdate.value;
+  else if (historyUpdate.action === 'clear') community.discordHistoryWebhookUrl = undefined;
+
+  await community.save();
+  res.json({ community });
+});
+
+/**
+ * PUT /api/communities/:communityId/members/:username/webhook
+ * Body: { activeWebhookUrl?: string | null; historyWebhookUrl?: string | null }
+ * Lets the community owner (or admin) set a personal Discord webhook override for one of
+ * their members, on the member's own User record — the same fields the splasher could set
+ * themselves via PUT /api/splashers/:username/webhook. Additive with the community's webhook.
+ */
+router.put('/:communityId/members/:username/webhook', async (req: Request, res: Response): Promise<void> => {
+  const community = await loadOwnedCommunity(req, res);
+  if (!community) return;
+
+  const { username } = req.params;
+  const member = await User.findOne({ username });
+  if (!member || !community.memberUserIds.some((id) => id.equals(member._id))) {
+    res.status(404).json({ error: `"${username}" is not a member of this community` });
+    return;
+  }
+
+  const { activeWebhookUrl, historyWebhookUrl } = req.body as {
+    activeWebhookUrl?: unknown;
+    historyWebhookUrl?: unknown;
+  };
+  const activeUpdate = resolveWebhookField(activeWebhookUrl);
+  const historyUpdate = resolveWebhookField(historyWebhookUrl);
+
+  if (activeUpdate.action === 'invalid' || historyUpdate.action === 'invalid') {
+    res.status(400).json({ error: 'Not a valid Discord webhook URL' });
+    return;
+  }
+
+  if (activeUpdate.action === 'set') member.discordActiveWebhookUrl = activeUpdate.value;
+  else if (activeUpdate.action === 'clear') member.discordActiveWebhookUrl = undefined;
+
+  if (historyUpdate.action === 'set') member.discordHistoryWebhookUrl = historyUpdate.value;
+  else if (historyUpdate.action === 'clear') member.discordHistoryWebhookUrl = undefined;
+
+  await member.save();
+  res.json({
+    username: member.username,
+    discordActiveWebhookUrl: member.discordActiveWebhookUrl,
+    discordHistoryWebhookUrl: member.discordHistoryWebhookUrl,
+  });
 });
 
 export default router;

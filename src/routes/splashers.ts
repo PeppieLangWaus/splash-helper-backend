@@ -5,6 +5,7 @@ import { User } from '../models/User';
 import { Community } from '../models/Community';
 import { JwtPayload } from '../types';
 import { getAll as getActiveSessions } from '../websocket/sessionManager';
+import { resolveWebhookField } from '../services/discordWebhook';
 
 /**
  * A requester can view a target user's archived data if they are an admin,
@@ -67,7 +68,60 @@ router.get('/:username', requireAuth, async (req: Request, res: Response): Promi
   }
 
   const sessions = await ArchivedSession.find({ username }).lean();
-  res.json({ username, sessions });
+  res.json({
+    username,
+    sessions,
+    discordActiveWebhookUrl: user.discordActiveWebhookUrl,
+    discordHistoryWebhookUrl: user.discordHistoryWebhookUrl,
+  });
+});
+
+/**
+ * PUT /splashers/:username/webhook
+ * Body: { activeWebhookUrl?: string | null; historyWebhookUrl?: string | null }
+ * Sets or clears this splasher's own Discord webhooks — additive with any community
+ * webhook(s) they belong to. Same access rule as GET /splashers/:username: self, admin,
+ * or the owner of a community the splasher belongs to.
+ */
+router.put('/:username/webhook', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  const { username } = req.params;
+  const requester = req.user!;
+
+  if (!(await canAccessSplasherData(requester, username))) {
+    res.status(403).json({ error: 'Access denied' });
+    return;
+  }
+
+  const user = await User.findOne({ username });
+  if (!user) {
+    res.status(404).json({ error: `User "${username}" not found` });
+    return;
+  }
+
+  const { activeWebhookUrl, historyWebhookUrl } = req.body as {
+    activeWebhookUrl?: unknown;
+    historyWebhookUrl?: unknown;
+  };
+  const activeUpdate = resolveWebhookField(activeWebhookUrl);
+  const historyUpdate = resolveWebhookField(historyWebhookUrl);
+
+  if (activeUpdate.action === 'invalid' || historyUpdate.action === 'invalid') {
+    res.status(400).json({ error: 'Not a valid Discord webhook URL' });
+    return;
+  }
+
+  if (activeUpdate.action === 'set') user.discordActiveWebhookUrl = activeUpdate.value;
+  else if (activeUpdate.action === 'clear') user.discordActiveWebhookUrl = undefined;
+
+  if (historyUpdate.action === 'set') user.discordHistoryWebhookUrl = historyUpdate.value;
+  else if (historyUpdate.action === 'clear') user.discordHistoryWebhookUrl = undefined;
+
+  await user.save();
+  res.json({
+    username: user.username,
+    discordActiveWebhookUrl: user.discordActiveWebhookUrl,
+    discordHistoryWebhookUrl: user.discordHistoryWebhookUrl,
+  });
 });
 
 export default router;

@@ -2,6 +2,7 @@ import { WebSocket } from 'ws';
 import { connectTestDB, disconnectTestDB, clearCollections } from '../testDb';
 import { User } from '../../models/User';
 import { ArchivedSession } from '../../models/ArchivedSession';
+import { Community } from '../../models/Community';
 import { makeSessionData } from '../fixtures';
 import * as sessionManager from '../../websocket/sessionManager';
 import { handleMessage } from '../../websocket/handlers';
@@ -211,6 +212,146 @@ describe('WebSocket session lifecycle', () => {
     // Second archive call should have edited the first notification rather than posting a new one.
     expect(upsertArchivedSessionNotification).toHaveBeenCalledTimes(2);
     expect(upsertArchivedSessionNotification.mock.calls[1][3]).toBe('discord-msg-1');
+  });
+
+  describe('extra webhook notifications (community + personal)', () => {
+    it('posts to a community history webhook (in addition to the site-wide one) when the splasher is a member', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { upsertArchivedSessionNotification } = require('../../services/discordWebhook') as {
+        upsertArchivedSessionNotification: jest.Mock;
+      };
+      upsertArchivedSessionNotification.mockClear();
+      upsertArchivedSessionNotification.mockResolvedValue('discord-msg-1');
+
+      const ws = await authenticatePlayer('SplashKing', 'tok-1');
+      const player = await User.findOne({ username: 'SplashKing' });
+      const community = await Community.create({
+        name: 'Splash Squad',
+        ownerIds: [player!._id],
+        memberUserIds: [player!._id],
+        discordHistoryWebhookUrl: 'https://discord.com/api/webhooks/111/community-token',
+      });
+
+      const sessionData = makeSessionData({ playerName: 'SplashKing' });
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_START', sessionData }));
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_END', sessionData }));
+
+      // One call for the site-wide webhook, one for the community webhook.
+      expect(upsertArchivedSessionNotification).toHaveBeenCalledTimes(2);
+      const communityCall = upsertArchivedSessionNotification.mock.calls.find(
+        (call) => call[0] === community.discordHistoryWebhookUrl,
+      );
+      expect(communityCall).toBeDefined();
+      expect(communityCall![1]).toBe('SplashKing');
+      expect(communityCall![3]).toBeUndefined(); // no existing message id yet
+
+      const archived = await ArchivedSession.findOne({ username: 'SplashKing' });
+      expect(archived!.extraDiscordMessageIds?.get(community._id.toString())).toBe('discord-msg-1');
+    });
+
+    it('edits the community message in place when a resumed session re-finalizes', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { upsertArchivedSessionNotification } = require('../../services/discordWebhook') as {
+        upsertArchivedSessionNotification: jest.Mock;
+      };
+
+      const ws = await authenticatePlayer('SplashKing', 'tok-1');
+      const player = await User.findOne({ username: 'SplashKing' });
+      const community = await Community.create({
+        name: 'Splash Squad',
+        ownerIds: [player!._id],
+        memberUserIds: [player!._id],
+        discordHistoryWebhookUrl: 'https://discord.com/api/webhooks/111/community-token',
+      });
+
+      const startTime = new Date(Date.now() - 3_600_000).toISOString();
+      const partial = makeSessionData({
+        playerName: 'SplashKing',
+        startTime,
+        spellsCast: 50,
+        logoutTime: new Date(Date.now() - 1_800_000).toISOString(),
+      });
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_START', sessionData: partial }));
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_END', sessionData: partial }));
+
+      upsertArchivedSessionNotification.mockClear();
+      upsertArchivedSessionNotification.mockResolvedValue('discord-msg-2');
+
+      const continued = makeSessionData({
+        playerName: 'SplashKing',
+        startTime,
+        spellsCast: 200,
+        logoutTime: new Date().toISOString(),
+      });
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_START', sessionData: continued }));
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_END', sessionData: continued }));
+
+      const communityCall = upsertArchivedSessionNotification.mock.calls.find(
+        (call) => call[0] === community.discordHistoryWebhookUrl,
+      );
+      expect(communityCall).toBeDefined();
+      expect(communityCall![3]).toBe('discord-msg-1'); // edits the message from the first finalization
+    });
+
+    it('does not call the webhook for a community the splasher does not belong to', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { upsertArchivedSessionNotification } = require('../../services/discordWebhook') as {
+        upsertArchivedSessionNotification: jest.Mock;
+      };
+      upsertArchivedSessionNotification.mockClear();
+      upsertArchivedSessionNotification.mockResolvedValue('discord-msg-1');
+
+      const ws = await authenticatePlayer('SplashKing', 'tok-1');
+      const otherOwner = await User.create({
+        username: 'OtherOwner',
+        passwordHash: 'hash',
+        token: 'other-token',
+        isAdmin: false,
+        setupLinkUsed: true,
+      });
+      await Community.create({
+        name: 'Someone Else\'s Community',
+        ownerIds: [otherOwner._id],
+        memberUserIds: [],
+        discordHistoryWebhookUrl: 'https://discord.com/api/webhooks/222/other-token',
+      });
+
+      const sessionData = makeSessionData({ playerName: 'SplashKing' });
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_START', sessionData }));
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_END', sessionData }));
+
+      // Only the site-wide webhook call — the splasher isn't a member of that community.
+      expect(upsertArchivedSessionNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('posts to the splasher\'s own personal history webhook, additively with the community one', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { upsertArchivedSessionNotification } = require('../../services/discordWebhook') as {
+        upsertArchivedSessionNotification: jest.Mock;
+      };
+      upsertArchivedSessionNotification.mockClear();
+      upsertArchivedSessionNotification.mockResolvedValue('discord-msg-1');
+
+      const ws = await authenticatePlayer('SplashKing', 'tok-1');
+      await User.findOneAndUpdate(
+        { username: 'SplashKing' },
+        { discordHistoryWebhookUrl: 'https://discord.com/api/webhooks/333/personal-token' },
+      );
+
+      const sessionData = makeSessionData({ playerName: 'SplashKing' });
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_START', sessionData }));
+      await handleMessage(ws, JSON.stringify({ type: 'SESSION_END', sessionData }));
+
+      // Site-wide + personal, no community involved here.
+      expect(upsertArchivedSessionNotification).toHaveBeenCalledTimes(2);
+      const personalCall = upsertArchivedSessionNotification.mock.calls.find(
+        (call) => call[0] === 'https://discord.com/api/webhooks/333/personal-token',
+      );
+      expect(personalCall).toBeDefined();
+
+      const archived = await ArchivedSession.findOne({ username: 'SplashKing' });
+      expect(archived!.extraDiscordMessageIds?.get('self')).toBe('discord-msg-1');
+    });
   });
 
   it('sends AUTH_FAILURE for invalid JSON', async () => {

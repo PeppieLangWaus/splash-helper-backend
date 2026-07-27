@@ -13,7 +13,7 @@ import { randomFakeSessionData, randomFakeHistoricalSessions } from '../devtools
 import { User } from '../models/User';
 import { ArchivedSession } from '../models/ArchivedSession';
 import { ActiveSessionState } from '../types';
-import { User } from '../models/User';
+import { requireEnv } from '../config/env';
 
 /**
  * Dev-only endpoints for injecting/removing fake active sessions without a
@@ -24,11 +24,9 @@ import { User } from '../models/User';
  * profile page has data to show — removing the fake session cleans both up.
  */
 const HISTORICAL_SESSION_COUNT = 5;
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production';
-const DEV_ADMIN_USERNAME = 'dev-admin';
+const JWT_SECRET = requireEnv('JWT_SECRET');
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET ?? 'change-me-in-production';
 const DEFAULT_DEV_ADMIN_USERNAME = 'DevAdmin';
 
 /**
@@ -88,32 +86,6 @@ function fakeSocket(): WebSocket {
   return { readyState: WebSocket.CLOSED } as unknown as WebSocket;
 }
 
-/**
- * POST /dev/admin-token
- * Mints a JWT for a standing dev-only admin user (creating it on first call),
- * so the frontend can skip the login screen and land admin-side automatically.
- */
-router.post('/admin-token', async (_req: Request, res: Response): Promise<void> => {
-  let user = await User.findOne({ username: DEV_ADMIN_USERNAME });
-  if (!user) {
-    const passwordHash = await bcrypt.hash(randomUUID(), 12);
-    user = await User.create({
-      username: DEV_ADMIN_USERNAME,
-      passwordHash,
-      token: randomUUID(),
-      isAdmin: true,
-      setupLinkUsed: true,
-    });
-  } else if (!user.isAdmin) {
-    user.isAdmin = true;
-    await user.save();
-  }
-
-  const payload = { sub: user.username, isAdmin: true };
-  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, username: user.username, isAdmin: true });
-});
-
 router.post('/sessions', async (req: Request, res: Response): Promise<void> => {
   const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
   if (!username) {
@@ -125,9 +97,12 @@ router.post('/sessions', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const user = await ensureFakeUser(username);
+
   const state: ActiveSessionState = {
     ws: fakeSocket(),
     username,
+    userId: user._id.toString(),
     authenticated: true,
     sessionData: randomFakeSessionData(username),
     lastUpdate: Date.now(),
@@ -136,7 +111,6 @@ router.post('/sessions', async (req: Request, res: Response): Promise<void> => {
 
   let historicalSessionsAdded = 0;
   try {
-    const user = await ensureFakeUser(username);
     const historical = randomFakeHistoricalSessions(username, HISTORICAL_SESSION_COUNT);
     const inserted = await ArchivedSession.insertMany(
       historical.map((h) => ({

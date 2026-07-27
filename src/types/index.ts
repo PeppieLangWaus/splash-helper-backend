@@ -90,6 +90,7 @@ export type WsOutgoingMessage = WsAuthSuccessResponse | WsAuthFailureResponse | 
 export interface ActiveSessionState {
   ws: WebSocket;
   username: string;
+  userId: string;
   sessionData: SessionData | null;
   authenticated: boolean;
   lastUpdate: number;

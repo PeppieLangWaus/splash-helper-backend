@@ -151,3 +151,155 @@ describe('GET /api/communities/:communityId/splashers and /sessions', () => {
     expect(res.status).toBe(200);
   });
 });
+
+const VALID_WEBHOOK_1 = 'https://discord.com/api/webhooks/123456789/abcDEF-123';
+const VALID_WEBHOOK_2 = 'https://discord.com/api/webhooks/987654321/xyz-789';
+
+describe('PUT /api/communities/:communityId/webhook', () => {
+  it('denies access to a non-owner, non-admin user', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    await createUser('mallory');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/webhook`)
+      .set('Authorization', `Bearer ${makeToken('mallory')}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK_1 });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 for a non-existent community', async () => {
+    await createUser('alice', { communityEligible: true });
+    const res = await request(app)
+      .put('/api/communities/64b000000000000000000000/webhook')
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK_1 });
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects a URL that is not a Discord webhook URL', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/webhook`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: 'https://evil.example.com/steal-tokens' });
+    expect(res.status).toBe(400);
+
+    const reloaded = await Community.findById(community._id).lean();
+    expect(reloaded!.discordActiveWebhookUrl).toBeUndefined();
+  });
+
+  it('sets the active and history webhooks independently', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/webhook`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK_1, historyWebhookUrl: VALID_WEBHOOK_2 });
+    expect(res.status).toBe(200);
+    expect(res.body.community.discordActiveWebhookUrl).toBe(VALID_WEBHOOK_1);
+    expect(res.body.community.discordHistoryWebhookUrl).toBe(VALID_WEBHOOK_2);
+
+    const reloaded = await Community.findById(community._id).lean();
+    expect(reloaded!.discordActiveWebhookUrl).toBe(VALID_WEBHOOK_1);
+    expect(reloaded!.discordHistoryWebhookUrl).toBe(VALID_WEBHOOK_2);
+  });
+
+  it('leaves a field unchanged when it is omitted from the body', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({
+      name: 'Alice Community',
+      ownerIds: [alice._id],
+      memberUserIds: [],
+      discordActiveWebhookUrl: VALID_WEBHOOK_1,
+      discordHistoryWebhookUrl: VALID_WEBHOOK_2,
+    });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/webhook`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ historyWebhookUrl: '' }); // clear history only, leave active untouched
+    expect(res.status).toBe(200);
+    expect(res.body.community.discordActiveWebhookUrl).toBe(VALID_WEBHOOK_1);
+    expect(res.body.community.discordHistoryWebhookUrl).toBeUndefined();
+  });
+
+  it('clears the webhook URL when given an empty value', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({
+      name: 'Alice Community',
+      ownerIds: [alice._id],
+      memberUserIds: [],
+      discordActiveWebhookUrl: VALID_WEBHOOK_1,
+    });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/webhook`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: '' });
+    expect(res.status).toBe(200);
+
+    const reloaded = await Community.findById(community._id).lean();
+    expect(reloaded!.discordActiveWebhookUrl).toBeUndefined();
+  });
+
+  it('allows an admin to set the webhook for a community they do not own', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/webhook`)
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK_2 });
+    expect(res.status).toBe(200);
+    expect(res.body.community.discordActiveWebhookUrl).toBe(VALID_WEBHOOK_2);
+  });
+});
+
+describe('PUT /api/communities/:communityId/members/:username/webhook', () => {
+  it('denies access to a non-owner, non-admin user', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const carol = await createUser('carol');
+    await createUser('mallory');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [carol._id] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/members/carol/webhook`)
+      .set('Authorization', `Bearer ${makeToken('mallory')}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK_1 });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 when the target user is not a member of the community', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    await createUser('carol');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/members/carol/webhook`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK_1 });
+    expect(res.status).toBe(404);
+  });
+
+  it('sets a personal webhook override on the member\'s own User record', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const carol = await createUser('carol');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [carol._id] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/members/carol/webhook`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ activeWebhookUrl: VALID_WEBHOOK_1, historyWebhookUrl: VALID_WEBHOOK_2 });
+    expect(res.status).toBe(200);
+    expect(res.body.discordActiveWebhookUrl).toBe(VALID_WEBHOOK_1);
+    expect(res.body.discordHistoryWebhookUrl).toBe(VALID_WEBHOOK_2);
+
+    const reloaded = await User.findById(carol._id).lean();
+    expect(reloaded!.discordActiveWebhookUrl).toBe(VALID_WEBHOOK_1);
+    expect(reloaded!.discordHistoryWebhookUrl).toBe(VALID_WEBHOOK_2);
+  });
+});
