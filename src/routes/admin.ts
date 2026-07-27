@@ -128,6 +128,45 @@ router.delete('/communities/:communityId', async (req: Request, res: Response): 
 });
 
 /**
+ * POST /api/admin/communities/:communityId/members
+ * Body: { usernames: string[] }
+ * Bulk-assigns splashers to a community. Unknown usernames are skipped and
+ * reported back in `notFound` rather than failing the whole request.
+ */
+router.post('/communities/:communityId/members', async (req: Request, res: Response): Promise<void> => {
+  const { communityId } = req.params;
+  const { usernames } = req.body as { usernames?: string[] };
+  if (!Array.isArray(usernames) || usernames.length === 0) {
+    res.status(400).json({ error: 'usernames must be a non-empty array' });
+    return;
+  }
+
+  const community = await Community.findById(communityId);
+  if (!community) {
+    res.status(404).json({ error: 'Community not found' });
+    return;
+  }
+
+  const users = await User.find({ username: { $in: usernames } }, { _id: 1, username: 1 }).lean();
+  const foundUsernames = new Set(users.map((u) => u.username));
+  const notFound = usernames.filter((username) => !foundUsernames.has(username));
+
+  if (users.length > 0) {
+    await Community.updateOne(
+      { _id: communityId },
+      { $addToSet: { memberUserIds: { $each: users.map((u) => u._id) } } },
+    );
+  }
+
+  const updated = await Community.findById(communityId).lean();
+  res.json({
+    message: `${users.length} splasher${users.length === 1 ? '' : 's'} assigned to community "${community.name}"`,
+    community: updated,
+    notFound,
+  });
+});
+
+/**
  * POST /api/admin/communities/:communityId/members/:username
  * Assigns a splasher to a community.
  */
