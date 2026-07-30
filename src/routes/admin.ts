@@ -1,8 +1,11 @@
 import { Router, Request, Response } from 'express';
+import { Types } from 'mongoose';
 import { requireAdmin } from '../middleware/auth';
 import { User } from '../models/User';
 import { ArchivedSession } from '../models/ArchivedSession';
 import { Community } from '../models/Community';
+import { SecurityEvent } from '../models/SecurityEvent';
+import { assignDefaultRank } from '../services/ranks';
 
 const router = Router();
 
@@ -18,6 +21,15 @@ router.use(requireAdmin);
 router.get('/users', async (_req: Request, res: Response): Promise<void> => {
   const users = await User.find({}, { passwordHash: 0 }).lean();
   res.json({ users });
+});
+
+/**
+ * GET /api/admin/security-events
+ * Read-only audit log of suspicious /community-bot/verify-setup attempts, for human review.
+ */
+router.get('/security-events', async (_req: Request, res: Response): Promise<void> => {
+  const events = await SecurityEvent.find({}).sort({ createdAt: -1 }).lean();
+  res.json({ events });
 });
 
 /**
@@ -147,14 +159,23 @@ router.post('/communities/:communityId/members', async (req: Request, res: Respo
     return;
   }
 
-  const users = await User.find({ username: { $in: usernames } }, { _id: 1, username: 1 }).lean();
+  const users = await User.find({ username: { $in: usernames } });
   const foundUsernames = new Set(users.map((u) => u.username));
   const notFound = usernames.filter((username) => !foundUsernames.has(username));
+  // Only newly-added members get defaulted onto the default rank — an existing member who
+  // already has a custom rank assignment must not be reset by re-running a bulk assign.
+  const newUsers = users.filter((u) => !community.memberUserIds.some((id) => id.equals(u._id)));
 
   if (users.length > 0) {
     await Community.updateOne(
       { _id: communityId },
       { $addToSet: { memberUserIds: { $each: users.map((u) => u._id) } } },
+    );
+    await Promise.all(
+      newUsers.map(async (user) => {
+        await assignDefaultRank(user, community._id as Types.ObjectId);
+        await user.save();
+      }),
     );
   }
 
@@ -178,7 +199,7 @@ router.post('/communities/:communityId/members/:username', async (req: Request, 
     return;
   }
 
-  const user = await User.findOne({ username }, { _id: 1 }).lean();
+  const user = await User.findOne({ username });
   if (!user) {
     res.status(404).json({ error: `User "${username}" not found` });
     return;
@@ -187,6 +208,8 @@ router.post('/communities/:communityId/members/:username', async (req: Request, 
   if (!community.memberUserIds.some((id) => id.equals(user._id))) {
     community.memberUserIds.push(user._id);
     await community.save();
+    await assignDefaultRank(user, community._id as Types.ObjectId);
+    await user.save();
   }
   res.json({ message: `User "${username}" assigned to community "${community.name}"` });
 });

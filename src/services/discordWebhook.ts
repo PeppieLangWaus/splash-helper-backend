@@ -31,6 +31,25 @@ export function resolveWebhookField(raw: unknown): WebhookFieldUpdate {
   return { action: 'set', value: trimmed };
 }
 
+const DISCORD_INVITE_URL_PATTERN = /^https:\/\/(?:www\.)?(?:discord\.gg|discord(?:app)?\.com\/invite)\/[\w-]+\/?$/;
+
+/** Validates that a string looks like a real Discord invite link before it's persisted. */
+export function isValidDiscordInviteUrl(url: string): boolean {
+  return DISCORD_INVITE_URL_PATTERN.test(url);
+}
+
+/** Same set/clear/skip/invalid resolution as `resolveWebhookField`, for a community's
+ *  public Discord invite link field. */
+export function resolveInviteUrlField(raw: unknown): WebhookFieldUpdate {
+  if (raw === undefined) return { action: 'skip' };
+  if (typeof raw !== 'string') return { action: 'invalid' };
+
+  const trimmed = raw.trim();
+  if (!trimmed) return { action: 'clear' };
+  if (!isValidDiscordInviteUrl(trimmed)) return { action: 'invalid' };
+  return { action: 'set', value: trimmed };
+}
+
 // A single sequential queue of async tasks, shared by both the batch notifier and the
 // single-session upsert notifier, so all outgoing requests to a webhook stay ordered
 // (and rate-limit-friendly) regardless of which caller enqueued them.

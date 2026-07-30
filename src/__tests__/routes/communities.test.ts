@@ -6,6 +6,7 @@ import { createTestApp } from '../testApp';
 import { User } from '../../models/User';
 import { Community } from '../../models/Community';
 import { ArchivedSession } from '../../models/ArchivedSession';
+import { DiscordServerConfig } from '../../models/DiscordServerConfig';
 import { makeSessionData } from '../fixtures';
 
 const app = createTestApp();
@@ -301,5 +302,104 @@ describe('PUT /api/communities/:communityId/members/:username/webhook', () => {
     const reloaded = await User.findById(carol._id).lean();
     expect(reloaded!.discordActiveWebhookUrl).toBe(VALID_WEBHOOK_1);
     expect(reloaded!.discordHistoryWebhookUrl).toBe(VALID_WEBHOOK_2);
+  });
+});
+
+describe('POST /api/communities/:communityId/apply', () => {
+  it('leaves a pending application when the community has no auto-add config', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    await createUser('carol');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .post(`/api/communities/${community._id}/apply`)
+      .set('Authorization', `Bearer ${makeToken('carol')}`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('pending');
+
+    const reloaded = await Community.findById(community._id);
+    expect(reloaded!.memberUserIds).toHaveLength(0);
+  });
+
+  it('adds immediately when the community has autoAddSplashers on', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    await createUser('carol');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+    await DiscordServerConfig.create({ communityId: community._id, guildId: 'g1', autoAddSplashers: true });
+
+    const res = await request(app)
+      .post(`/api/communities/${community._id}/apply`)
+      .set('Authorization', `Bearer ${makeToken('carol')}`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('added');
+
+    const reloaded = await Community.findById(community._id);
+    expect(reloaded!.memberUserIds).toHaveLength(1);
+  });
+
+  it('rejects a duplicate application while one is already pending', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    await createUser('carol');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    await request(app).post(`/api/communities/${community._id}/apply`).set('Authorization', `Bearer ${makeToken('carol')}`);
+    const second = await request(app)
+      .post(`/api/communities/${community._id}/apply`)
+      .set('Authorization', `Bearer ${makeToken('carol')}`);
+    expect(second.status).toBe(400);
+  });
+});
+
+describe('POST /api/communities/:communityId/api-token/regenerate', () => {
+  it('rotates the token, invalidating the old value', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+    const oldToken = community.apiToken;
+
+    const res = await request(app)
+      .post(`/api/communities/${community._id}/api-token/regenerate`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`);
+    expect(res.status).toBe(200);
+    expect(res.body.apiToken).not.toBe(oldToken);
+
+    const reloaded = await Community.findById(community._id);
+    expect(reloaded!.apiToken).toBe(res.body.apiToken);
+  });
+
+  it('denies non-owners', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    await createUser('mallory');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .post(`/api/communities/${community._id}/api-token/regenerate`)
+      .set('Authorization', `Bearer ${makeToken('mallory')}`);
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('PUT /api/communities/:communityId/discord-invite', () => {
+  it('sets and clears the invite URL, rejecting invalid values', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const invalid = await request(app)
+      .put(`/api/communities/${community._id}/discord-invite`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ discordInviteUrl: 'https://example.com/not-an-invite' });
+    expect(invalid.status).toBe(400);
+
+    const set = await request(app)
+      .put(`/api/communities/${community._id}/discord-invite`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ discordInviteUrl: 'https://discord.gg/abc123' });
+    expect(set.status).toBe(200);
+    expect(set.body.community.discordInviteUrl).toBe('https://discord.gg/abc123');
+
+    const cleared = await request(app)
+      .put(`/api/communities/${community._id}/discord-invite`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ discordInviteUrl: '' });
+    expect(cleared.body.community.discordInviteUrl).toBeUndefined();
   });
 });

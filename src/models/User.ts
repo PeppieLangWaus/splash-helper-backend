@@ -1,4 +1,4 @@
-import mongoose, { Document, Schema } from 'mongoose';
+import mongoose, { Document, Schema, Types } from 'mongoose';
 
 export interface IUser extends Document {
   username: string;
@@ -11,6 +11,10 @@ export interface IUser extends Document {
    *  on their behalf. Additive with any community webhook(s) the splasher belongs to. */
   discordActiveWebhookUrl?: string;
   discordHistoryWebhookUrl?: string;
+  /** This splasher's rank (and therefore hourly rate) in each community they belong to,
+   *  keyed by Community _id. Decoupled from `Community.memberUserIds` on purpose — a rank
+   *  assignment only matters once someone is a member, but membership itself is tracked there. */
+  rankAssignments?: Map<string, Types.ObjectId>;
   createdAt: Date;
 }
 
@@ -24,6 +28,7 @@ const UserSchema = new Schema<IUser>(
     communityEligible: { type: Boolean, default: false },
     discordActiveWebhookUrl: { type: String },
     discordHistoryWebhookUrl: { type: String },
+    rankAssignments: { type: Map, of: Schema.Types.ObjectId },
   },
   { timestamps: { createdAt: 'createdAt', updatedAt: false } },
 );

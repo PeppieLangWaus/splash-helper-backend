@@ -8,6 +8,7 @@ import sessionsRouter from './routes/sessions';
 import authRouter from './routes/auth';
 import adminRouter from './routes/admin';
 import communitiesRouter from './routes/communities';
+import communityBotRouter from './routes/communityBot';
 import devRouter from './routes/dev';
 import { attachWebSocketServer } from './websocket/server';
 import { sweepInactiveSessions } from './websocket/handlers';
@@ -29,6 +30,7 @@ app.use('/sessions', sessionsRouter);
 app.use('/auth', authRouter);
 app.use('/admin', adminRouter);
 app.use('/communities', communitiesRouter);
+app.use('/community-bot', communityBotRouter);
 
 if (process.env.NODE_ENV !== 'production') {
   app.use('/dev', devRouter);

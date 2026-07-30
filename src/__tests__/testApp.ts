@@ -9,6 +9,7 @@ import sessionsRouter from '../routes/sessions';
 import authRouter from '../routes/auth';
 import adminRouter from '../routes/admin';
 import communitiesRouter from '../routes/communities';
+import communityBotRouter from '../routes/communityBot';
 
 export function createTestApp() {
   const app = express();
@@ -19,6 +20,7 @@ export function createTestApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/communities', communitiesRouter);
+  app.use('/api/community-bot', communityBotRouter);
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   return app;
 }

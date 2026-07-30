@@ -32,17 +32,43 @@ const router = Router();
 
 /**
  * GET /splashers
- * Public - returns currently active sessions (in-memory, not from DB).
+ * Public - returns currently active sessions (in-memory, not from DB). Each entry also lists
+ * the splasher's community affiliation(s) that have a public Discord invite configured, so the
+ * frontend can link their name out to their community's server. This is additive, not a
+ * restriction: the feed itself stays fully public, same as before — only rate/rank data and
+ * archived history remain behind community-token/JWT auth.
  */
-router.get('/', (_req: Request, res: Response): void => {
+router.get('/', async (_req: Request, res: Response): Promise<void> => {
   const active = getActiveSessions();
-  const sessions = active
-    .filter((s) => s.authenticated && s.sessionData !== null)
-    .map((s) => ({
+  const authenticated = active.filter((s) => s.authenticated && s.sessionData !== null);
+
+  const users = await User.find(
+    { username: { $in: authenticated.map((s) => s.username) } },
+    { _id: 1, username: 1 },
+  ).lean();
+  const userIdByUsername = new Map(users.map((u) => [u.username, u._id]));
+
+  const communities = await Community.find(
+    { memberUserIds: { $in: users.map((u) => u._id) }, discordInviteUrl: { $exists: true, $nin: [null, ''] } },
+    { name: 1, memberUserIds: 1, discordInviteUrl: 1 },
+  ).lean();
+
+  const sessions = authenticated.map((s) => {
+    const userId = userIdByUsername.get(s.username);
+    const memberCommunities = userId
+      ? communities.filter((c) => c.memberUserIds.some((id) => id.equals(userId)))
+      : [];
+    return {
       username: s.username,
       sessionData: s.sessionData,
       lastUpdate: s.lastUpdate,
-    }));
+      communities: memberCommunities.map((c) => ({
+        communityId: c._id,
+        communityName: c.name,
+        discordInviteUrl: c.discordInviteUrl,
+      })),
+    };
+  });
   res.json({ sessions });
 });
 
@@ -73,6 +99,9 @@ router.get('/:username', requireAuth, async (req: Request, res: Response): Promi
     sessions,
     discordActiveWebhookUrl: user.discordActiveWebhookUrl,
     discordHistoryWebhookUrl: user.discordHistoryWebhookUrl,
+    // The plugin sync token is only ever included for the splasher viewing their own data —
+    // never when a community owner is looking up one of their members through this same route.
+    token: requester.sub === username ? user.token : undefined,
   });
 });
 

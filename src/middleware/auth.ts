@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { JwtPayload } from '../types';
 import { requireEnv } from '../config/env';
+import { Community } from '../models/Community';
 
 const JWT_SECRET = requireEnv('JWT_SECRET');
 
@@ -30,4 +31,27 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
     }
     next();
   });
+}
+
+/**
+ * Authenticates a request as belonging to a specific community, via the `X-Community-Token`
+ * header matched against that community's `apiToken`. Used by every `/api/community-bot/*`
+ * route (the Discord bot's ongoing per-guild calls) so handlers can trust `req.community`
+ * without ever taking a community id from the request body/params.
+ */
+export async function requireCommunityToken(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const token = req.headers['x-community-token'];
+  if (typeof token !== 'string' || !token.trim()) {
+    res.status(401).json({ error: 'Community API token required' });
+    return;
+  }
+
+  const community = await Community.findOne({ apiToken: token.trim() });
+  if (!community) {
+    res.status(401).json({ error: 'Invalid community API token' });
+    return;
+  }
+
+  req.community = community;
+  next();
 }

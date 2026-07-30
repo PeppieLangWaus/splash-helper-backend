@@ -1,4 +1,5 @@
 import { WebSocket } from 'ws';
+import type { ICommunity } from '../models/Community';
 
 export interface RuneUsageMap {
   [runeId: string]: number;
@@ -119,6 +120,9 @@ declare global {
   namespace Express {
     interface Request {
       user?: JwtPayload;
+      /** Set by `requireCommunityToken` — the Community whose `apiToken` matched the
+       *  `X-Community-Token` header on this request. */
+      community?: ICommunity;
     }
   }
 }

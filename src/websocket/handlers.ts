@@ -1,9 +1,12 @@
 import { WebSocket } from 'ws';
 import bcrypt from 'bcryptjs';
 import { randomUUID } from 'crypto';
+import { Types } from 'mongoose';
 import { User, IUser } from '../models/User';
 import { ArchivedSession, IArchivedSession } from '../models/ArchivedSession';
 import { Community } from '../models/Community';
+import { Rank } from '../models/Rank';
+import { getMapEntry } from '../services/ranks';
 import { generateSetupLink } from '../routes/auth';
 import {
   get as getSession,
@@ -186,6 +189,37 @@ async function notifyExtraWebhooks(
   }
 }
 
+/**
+ * Snapshots this splasher's current rank + hourly rate in every community they belong to,
+ * for a session being finalized *right now*. Only ever called once, when the session's
+ * ArchivedSession doc is first created — see the `earningsSnapshot` field doc comment for why
+ * this must never be recomputed later.
+ */
+async function buildEarningsSnapshot(
+  user: IUser,
+): Promise<Map<string, { rankId: Types.ObjectId; rankName: string; hourlyRate: number }>> {
+  const snapshot = new Map<string, { rankId: Types.ObjectId; rankName: string; hourlyRate: number }>();
+  const communities = await Community.find({ memberUserIds: user._id }, { _id: 1 }).lean();
+  if (communities.length === 0) return snapshot;
+
+  const rankIds = communities
+    .map((c) => getMapEntry<Types.ObjectId>(user.rankAssignments, c._id.toString()))
+    .filter((id): id is Types.ObjectId => !!id);
+  if (rankIds.length === 0) return snapshot;
+
+  const ranks = await Rank.find({ _id: { $in: rankIds } }).lean();
+  const rankById = new Map(ranks.map((r) => [r._id.toString(), r]));
+
+  for (const community of communities) {
+    const rankId = getMapEntry<Types.ObjectId>(user.rankAssignments, community._id.toString());
+    const rank = rankId ? rankById.get(rankId.toString()) : undefined;
+    if (rank) {
+      snapshot.set(community._id.toString(), { rankId: rank._id, rankName: rank.name, hourlyRate: rank.hourlyRate });
+    }
+  }
+  return snapshot;
+}
+
 async function archiveSession(username: string, sessionData: SessionData): Promise<void> {
   const user = await User.findOne({ username });
   if (!user) return;
@@ -241,6 +275,7 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
     }
 
     const sessionId = randomUUID();
+    const earningsSnapshot = await buildEarningsSnapshot(user);
     const created = await ArchivedSession.create({
       sessionId,
       createdTimestamp,
@@ -248,6 +283,7 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
       userId: user._id,
       username,
       session: sessionData,
+      earningsSnapshot,
     });
 
     const createdEntry: SplashEntry = {

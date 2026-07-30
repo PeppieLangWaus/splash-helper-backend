@@ -15,6 +15,11 @@ export interface IArchivedSession extends Document {
    *  post also goes to: one entry per community the splasher belongs to (keyed by Community
    *  _id) plus one entry keyed by the literal string 'self' for the splasher's own webhook. */
   extraDiscordMessageIds?: Map<string, string>;
+  /** The splasher's rank + hourly rate in each community they belonged to *at the moment this
+   *  session was first finalized* (keyed by Community _id). Frozen at creation on purpose: a
+   *  later rate change must only affect future sessions, never retroactively re-price one that
+   *  may already have been paid out. Never touched again once written. */
+  earningsSnapshot?: Map<string, { rankId: Types.ObjectId; rankName: string; hourlyRate: number }>;
 }
 
 const SessionDataSchema = new Schema<SessionData>(
@@ -52,6 +57,17 @@ const ArchivedSessionSchema = new Schema<IArchivedSession>(
     session: { type: SessionDataSchema, required: true },
     discordMessageId: { type: String },
     extraDiscordMessageIds: { type: Map, of: String },
+    earningsSnapshot: {
+      type: Map,
+      of: new Schema(
+        {
+          rankId: { type: Schema.Types.ObjectId, ref: 'Rank', required: true },
+          rankName: { type: String, required: true },
+          hourlyRate: { type: Number, required: true },
+        },
+        { _id: false },
+      ),
+    },
   },
   { timestamps: false },
 );
