@@ -204,24 +204,25 @@ router.post('/link-account', async (req: Request, res: Response): Promise<void> 
     await Community.updateOne({ _id: communityId }, { $addToSet: { memberUserIds: user._id } });
     await assignDefaultRank(user, communityId);
     await user.save();
-    await SplasherApplication.create({
+    const application = await SplasherApplication.create({
       communityId,
       userId: user._id,
       source: 'discord-link',
       status: 'approved',
       resolvedAt: new Date(),
     });
-    res.json({ matched: true, status: 'added', communityName: community.name });
+    res.json({ matched: true, status: 'added', communityName: community.name, applicationId: application._id });
     return;
   }
 
-  await SplasherApplication.create({
+  const application = await SplasherApplication.create({
     communityId,
     userId: user._id,
     source: 'discord-link',
     status: 'pending',
   });
-  res.json({ matched: true, status: 'pending', communityName: community.name });
+  // The bot needs applicationId to attach Approve/Reject buttons to this specific ticket.
+  res.json({ matched: true, status: 'pending', communityName: community.name, applicationId: application._id });
 });
 
 export default router;
