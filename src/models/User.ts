@@ -15,6 +15,11 @@ export interface IUser extends Document {
    *  keyed by Community _id. Decoupled from `Community.memberUserIds` on purpose — a rank
    *  assignment only matters once someone is a member, but membership itself is tracked there. */
   rankAssignments?: Map<string, Types.ObjectId>;
+  /** Set by the Discord bot's /link-account handshake once a token+RSN match is confirmed.
+   *  Not globally unique — the same Discord user could plausibly link different RSNs in
+   *  different communities — so lookups always scope by discordUserId *and* community
+   *  membership rather than relying on this alone. */
+  discordUserId?: string;
   createdAt: Date;
 }
 
@@ -29,8 +34,11 @@ const UserSchema = new Schema<IUser>(
     discordActiveWebhookUrl: { type: String },
     discordHistoryWebhookUrl: { type: String },
     rankAssignments: { type: Map, of: Schema.Types.ObjectId },
+    discordUserId: { type: String },
   },
   { timestamps: { createdAt: 'createdAt', updatedAt: false } },
 );
+
+UserSchema.index({ discordUserId: 1 });
 
 export const User = mongoose.model<IUser>('User', UserSchema);

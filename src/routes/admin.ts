@@ -16,7 +16,10 @@ router.use(requireAdmin);
 
 /**
  * GET /api/admin/users
- * Returns all users (passwords excluded).
+ * Returns all users (passwords excluded). Unlike GET /splashers/:username — which only ever
+ * includes a user's plugin sync `token` when they're looking up their own data — admin routes
+ * trust the requireAdmin JWT check and include every user's token here, so staff can look one
+ * up for support (e.g. a splasher who lost theirs) without needing DB access.
  */
 router.get('/users', async (_req: Request, res: Response): Promise<void> => {
   const users = await User.find({}, { passwordHash: 0 }).lean();

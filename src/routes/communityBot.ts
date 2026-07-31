@@ -5,8 +5,12 @@ import { User } from '../models/User';
 import { DiscordServerConfig } from '../models/DiscordServerConfig';
 import { SplasherApplication } from '../models/SplasherApplication';
 import { SecurityEvent } from '../models/SecurityEvent';
+import { ArchivedSession } from '../models/ArchivedSession';
+import { BankTicket, BankTicketType } from '../models/BankTicket';
 import { requireCommunityToken } from '../middleware/auth';
 import { assignDefaultRank } from '../services/ranks';
+import { computeTotalEarnedGp, computeTotalPaidOutGp } from '../services/income';
+import { getAll as getActiveSessions } from '../websocket/sessionManager';
 
 const router = Router();
 
@@ -90,6 +94,9 @@ router.put('/discord-config', async (req: Request, res: Response): Promise<void>
     historyChannelId,
     activeWorldsChannelId,
     autoAddSplashers,
+    bankChannelId,
+    bankManagerRoleIds,
+    minPayoutGp,
   } = req.body as Partial<{
     guildId: string;
     supportRoleIds: string[];
@@ -98,12 +105,18 @@ router.put('/discord-config', async (req: Request, res: Response): Promise<void>
     historyChannelId: string;
     activeWorldsChannelId: string;
     autoAddSplashers: boolean;
+    bankChannelId: string;
+    bankManagerRoleIds: string[];
+    minPayoutGp: number;
   }>;
 
   if (!guildId) {
     res.status(400).json({ error: 'guildId is required' });
     return;
   }
+
+  const validMinPayout =
+    typeof minPayoutGp === 'number' && Number.isFinite(minPayoutGp) && minPayoutGp >= 0;
 
   const config = await DiscordServerConfig.findOneAndUpdate(
     { communityId },
@@ -116,10 +129,55 @@ router.put('/discord-config', async (req: Request, res: Response): Promise<void>
       historyChannelId,
       activeWorldsChannelId,
       autoAddSplashers: !!autoAddSplashers,
+      bankChannelId,
+      bankManagerRoleIds: Array.isArray(bankManagerRoleIds) ? bankManagerRoleIds : [],
+      minPayoutGp: validMinPayout ? minPayoutGp : 10_000_000,
     },
     { upsert: true, new: true },
   );
   res.json({ config });
+});
+
+/**
+ * GET /api/community-bot/active-sessions
+ * In-progress splash sessions belonging to this community's members right now. Powers the
+ * bot's active-worlds channel message.
+ */
+router.get('/active-sessions', async (req: Request, res: Response): Promise<void> => {
+  const memberIds = new Set(req.community!.memberUserIds.map((id) => id.toString()));
+
+  const sessions = getActiveSessions()
+    .filter((s) => s.authenticated && s.sessionData !== null && memberIds.has(s.userId))
+    .map((s) => ({ username: s.username, session: s.sessionData }));
+
+  res.json({ sessions });
+});
+
+/**
+ * GET /api/community-bot/sessions/history?since=<epoch-ms>
+ * Archived sessions belonging to this community's members finalized after `since` (defaults
+ * to 0, i.e. everything), oldest first. Powers the bot's history channel messages — the bot
+ * tracks its own `since` cursor per guild and posts one message per entry returned here.
+ */
+router.get('/sessions/history', async (req: Request, res: Response): Promise<void> => {
+  const since = Number(req.query.since) || 0;
+
+  const sessions = await ArchivedSession.find({
+    userId: { $in: req.community!.memberUserIds },
+    finalizedTimestamp: { $gt: since },
+  })
+    .sort({ finalizedTimestamp: 1 })
+    .lean();
+
+  res.json({
+    sessions: sessions.map((s) => ({
+      sessionId: s.sessionId,
+      username: s.username,
+      createdTimestamp: s.createdTimestamp,
+      finalizedTimestamp: s.finalizedTimestamp,
+      session: s.session,
+    })),
+  });
 });
 
 /**
@@ -179,7 +237,7 @@ router.post('/applications/:appId/resolve', async (req: Request, res: Response):
  * pending logic as the website's POST /communities/:id/apply, scoped to this token's community.
  */
 router.post('/link-account', async (req: Request, res: Response): Promise<void> => {
-  const { token, rsn } = req.body as { token?: string; rsn?: string };
+  const { token, rsn, discordUserId } = req.body as { token?: string; rsn?: string; discordUserId?: string };
   if (!token || !rsn) {
     res.status(400).json({ error: 'token and rsn are required' });
     return;
@@ -189,6 +247,11 @@ router.post('/link-account', async (req: Request, res: Response): Promise<void> 
   if (!user) {
     res.json({ matched: false, status: 'no-match' });
     return;
+  }
+
+  if (discordUserId && user.discordUserId !== discordUserId) {
+    user.discordUserId = discordUserId;
+    await user.save();
   }
 
   const community = req.community!;
@@ -223,6 +286,209 @@ router.post('/link-account', async (req: Request, res: Response): Promise<void> 
   });
   // The bot needs applicationId to attach Approve/Reject buttons to this specific ticket.
   res.json({ matched: true, status: 'pending', communityName: community.name, applicationId: application._id });
+});
+
+/** Resolves a Discord user to their backend User, scoped to this community's membership — see
+ *  User.discordUserId's doc comment for why membership scoping matters, not just the id match. */
+async function findLinkedMember(communityId: Types.ObjectId, memberUserIds: Types.ObjectId[], discordUserId: string) {
+  return User.findOne({ discordUserId, _id: { $in: memberUserIds } });
+}
+
+/**
+ * GET /api/community-bot/income?discordUserId=
+ * How much a linked splasher has earned in this community, how much of that has already been
+ * paid out, and what's still available to pay out.
+ */
+router.get('/income', async (req: Request, res: Response): Promise<void> => {
+  const { discordUserId } = req.query as { discordUserId?: string };
+  if (!discordUserId) {
+    res.status(400).json({ error: 'discordUserId is required' });
+    return;
+  }
+
+  const community = req.community!;
+  const communityId = community._id as Types.ObjectId;
+  const user = await findLinkedMember(communityId, community.memberUserIds, discordUserId);
+  if (!user) {
+    res.json({ linked: false });
+    return;
+  }
+
+  const [totalEarnedGp, totalPaidOutGp] = await Promise.all([
+    computeTotalEarnedGp(user._id as Types.ObjectId, communityId),
+    computeTotalPaidOutGp(user._id as Types.ObjectId, communityId),
+  ]);
+  const config = await DiscordServerConfig.findOne({ communityId }).lean();
+
+  res.json({
+    linked: true,
+    username: user.username,
+    totalEarnedGp: Math.round(totalEarnedGp),
+    totalPaidOutGp: Math.round(totalPaidOutGp),
+    availableGp: Math.round(totalEarnedGp - totalPaidOutGp),
+    minPayoutGp: config?.minPayoutGp ?? 10_000_000,
+  });
+});
+
+/**
+ * POST /api/community-bot/income/payout
+ * Body: { discordUserId }
+ * Opens a pending payout BankTicket for the splasher's full available balance, if they meet the
+ * community's minimum payout threshold. Staff still have to Accept it (with a screenshot) via
+ * POST /bank/tickets/:id/resolve before anything actually moves.
+ */
+router.post('/income/payout', async (req: Request, res: Response): Promise<void> => {
+  const { discordUserId } = req.body as { discordUserId?: string };
+  if (!discordUserId) {
+    res.status(400).json({ error: 'discordUserId is required' });
+    return;
+  }
+
+  const community = req.community!;
+  const communityId = community._id as Types.ObjectId;
+  const user = await findLinkedMember(communityId, community.memberUserIds, discordUserId);
+  if (!user) {
+    res.status(404).json({ error: 'No linked account found for this community — run /link first.' });
+    return;
+  }
+
+  const [totalEarnedGp, totalPaidOutGp, config] = await Promise.all([
+    computeTotalEarnedGp(user._id as Types.ObjectId, communityId),
+    computeTotalPaidOutGp(user._id as Types.ObjectId, communityId),
+    DiscordServerConfig.findOne({ communityId }).lean(),
+  ]);
+  const availableGp = Math.round(totalEarnedGp - totalPaidOutGp);
+  const minPayoutGp = config?.minPayoutGp ?? 10_000_000;
+
+  if (availableGp < minPayoutGp) {
+    res.status(400).json({ error: 'Not enough available gp for a payout yet.', availableGp, minPayoutGp });
+    return;
+  }
+
+  const ticket = await BankTicket.create({
+    communityId,
+    type: 'payout',
+    amountGp: availableGp,
+    requestedByUserId: user._id,
+    requestedByUsername: user.username,
+    requestedByDiscordId: discordUserId,
+  });
+  res.status(201).json({ ticket });
+});
+
+/**
+ * GET /api/community-bot/bank
+ * The community's current GP balance plus its configured payout threshold.
+ */
+router.get('/bank', async (req: Request, res: Response): Promise<void> => {
+  const community = req.community!;
+  const config = await DiscordServerConfig.findOne({ communityId: community._id }).lean();
+  res.json({ bankGp: community.bankGp, minPayoutGp: config?.minPayoutGp ?? 10_000_000 });
+});
+
+/**
+ * POST /api/community-bot/bank/tickets
+ * Body: { type: 'deposit' | 'withdraw', amountGp, discordUserId, discordUsername }
+ * Opens a pending deposit/withdraw ticket. Role-gating (only bank managers may call this) is the
+ * bot's responsibility, same as every other staff-only action here — this route only trusts the
+ * community token, not any notion of "who's allowed".
+ */
+router.post('/bank/tickets', async (req: Request, res: Response): Promise<void> => {
+  const { type, amountGp, discordUserId, discordUsername } = req.body as {
+    type?: BankTicketType;
+    amountGp?: number;
+    discordUserId?: string;
+    discordUsername?: string;
+  };
+
+  if (type !== 'deposit' && type !== 'withdraw') {
+    res.status(400).json({ error: "type must be 'deposit' or 'withdraw'" });
+    return;
+  }
+  if (typeof amountGp !== 'number' || !Number.isFinite(amountGp) || amountGp <= 0) {
+    res.status(400).json({ error: 'amountGp must be a positive number' });
+    return;
+  }
+  if (!discordUserId || !discordUsername) {
+    res.status(400).json({ error: 'discordUserId and discordUsername are required' });
+    return;
+  }
+
+  const community = req.community!;
+  if (type === 'withdraw' && amountGp > community.bankGp) {
+    res.status(400).json({ error: 'Insufficient bank balance for this withdrawal.', bankGp: community.bankGp });
+    return;
+  }
+
+  const linkedUser = await findLinkedMember(community._id as Types.ObjectId, community.memberUserIds, discordUserId);
+  const ticket = await BankTicket.create({
+    communityId: community._id,
+    type,
+    amountGp,
+    requestedByUserId: linkedUser?._id,
+    requestedByUsername: discordUsername,
+    requestedByDiscordId: discordUserId,
+  });
+  res.status(201).json({ ticket });
+});
+
+/**
+ * POST /api/community-bot/bank/tickets/:ticketId/resolve
+ * Body: { approve, screenshotUrl?, authorizedByDiscordId, authorizedByUsername }
+ * Rejecting just closes the ticket out. Approving requires a screenshot and actually moves the
+ * bank balance — deposits add, withdrawals/payouts subtract (re-checked against the *current*
+ * balance here, since it may have moved since the ticket was opened).
+ */
+router.post('/bank/tickets/:ticketId/resolve', async (req: Request, res: Response): Promise<void> => {
+  const { ticketId } = req.params;
+  const { approve, screenshotUrl, authorizedByDiscordId, authorizedByUsername } = req.body as {
+    approve?: boolean;
+    screenshotUrl?: string;
+    authorizedByDiscordId?: string;
+    authorizedByUsername?: string;
+  };
+
+  const community = req.community!;
+  const ticket = await BankTicket.findOne({ _id: ticketId, communityId: community._id });
+  if (!ticket) {
+    res.status(404).json({ error: 'Ticket not found' });
+    return;
+  }
+  if (ticket.status !== 'pending') {
+    res.status(400).json({ error: `Ticket already ${ticket.status}` });
+    return;
+  }
+
+  ticket.authorizedByDiscordId = authorizedByDiscordId;
+  ticket.authorizedByUsername = authorizedByUsername;
+  ticket.resolvedAt = new Date();
+
+  if (!approve) {
+    ticket.status = 'rejected';
+    await ticket.save();
+    res.json({ ticket, bankGp: community.bankGp });
+    return;
+  }
+
+  if (!screenshotUrl) {
+    res.status(400).json({ error: 'screenshotUrl is required to approve a ticket' });
+    return;
+  }
+
+  if (ticket.type === 'deposit') {
+    community.bankGp += ticket.amountGp;
+  } else {
+    if (ticket.amountGp > community.bankGp) {
+      res.status(400).json({ error: 'Insufficient bank balance to complete this ticket.', bankGp: community.bankGp });
+      return;
+    }
+    community.bankGp -= ticket.amountGp;
+  }
+
+  ticket.status = 'completed';
+  ticket.screenshotUrl = screenshotUrl;
+  await Promise.all([ticket.save(), community.save()]);
+  res.json({ ticket, bankGp: community.bankGp });
 });
 
 export default router;

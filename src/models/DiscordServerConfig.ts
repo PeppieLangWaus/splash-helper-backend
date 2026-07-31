@@ -11,6 +11,15 @@ export interface IDiscordServerConfig extends Document {
   historyChannelId?: string;
   activeWorldsChannelId?: string;
   autoAddSplashers: boolean;
+  /** Channel where /bank deposit, /bank withdraw, and completed /income payout requests are
+   *  logged, one thread per transaction. */
+  bankChannelId?: string;
+  /** Roles allowed to run /bank deposit, /bank withdraw, and accept /income payout tickets —
+   *  distinct from supportRoleIds, which only pings for general support tickets. */
+  bankManagerRoleIds: string[];
+  /** Minimum available (earned minus already paid out) GP a splasher needs before /income payout
+   *  will open a ticket for them. */
+  minPayoutGp: number;
   createdAt: Date;
 }
 
@@ -24,6 +33,9 @@ const DiscordServerConfigSchema = new Schema<IDiscordServerConfig>(
     historyChannelId: { type: String },
     activeWorldsChannelId: { type: String },
     autoAddSplashers: { type: Boolean, default: false },
+    bankChannelId: { type: String },
+    bankManagerRoleIds: [{ type: String }],
+    minPayoutGp: { type: Number, default: 10_000_000, min: 0 },
   },
   { timestamps: { createdAt: 'createdAt', updatedAt: false } },
 );

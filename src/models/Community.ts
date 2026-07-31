@@ -16,6 +16,9 @@ export interface ICommunity extends Document {
    *  community-scoped API access. Stored in plaintext, same convention as `User.token` —
    *  it's shown back to the owner (Account Settings) rather than a show-once secret. */
   apiToken: string;
+  /** The community's GP treasury, adjusted by staff `/bank deposit`/`/bank withdraw` and by
+   *  completed `/income payout` requests (see BankTicket). Never goes negative. */
+  bankGp: number;
   createdAt: Date;
 }
 
@@ -33,6 +36,7 @@ const CommunitySchema = new Schema<ICommunity>(
       unique: true,
       default: () => randomBytes(32).toString('hex'),
     },
+    bankGp: { type: Number, default: 0, min: 0 },
   },
   { timestamps: { createdAt: 'createdAt', updatedAt: false } },
 );
