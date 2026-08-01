@@ -1,7 +1,8 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
-/** One Discord server's `/setup` configuration, one per Community. Owned entirely by the
- *  bot via the community-token-authenticated `/api/community-bot/discord-config` route. */
+/** One Discord server's `/setup` configuration, one per Community. Written by the bot via the
+ *  community-token-authenticated `/api/community-bot/discord-config` route, and editable by the
+ *  community owner via `/api/communities/:communityId/discord-config` on the website. */
 export interface IDiscordServerConfig extends Document {
   communityId: Types.ObjectId;
   guildId: string;

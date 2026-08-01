@@ -378,6 +378,114 @@ describe('POST /api/communities/:communityId/api-token/regenerate', () => {
   });
 });
 
+const SNOWFLAKE_1 = '111111111111111111';
+const SNOWFLAKE_2 = '222222222222222222';
+
+describe('GET and PUT /api/communities/:communityId/discord-config', () => {
+  it('denies access to a non-owner, non-admin user', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    await createUser('mallory');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const getRes = await request(app)
+      .get(`/api/communities/${community._id}/discord-config`)
+      .set('Authorization', `Bearer ${makeToken('mallory')}`);
+    expect(getRes.status).toBe(403);
+
+    const putRes = await request(app)
+      .put(`/api/communities/${community._id}/discord-config`)
+      .set('Authorization', `Bearer ${makeToken('mallory')}`)
+      .send({ minPayoutGp: 5_000_000 });
+    expect(putRes.status).toBe(403);
+  });
+
+  it('returns a null config before /setup has been run', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .get(`/api/communities/${community._id}/discord-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`);
+    expect(res.status).toBe(200);
+    expect(res.body.config).toBeNull();
+  });
+
+  it('returns 404 on PUT before /setup has been run', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/discord-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ minPayoutGp: 5_000_000 });
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects channel/role ids that are not valid snowflakes', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+    await DiscordServerConfig.create({ communityId: community._id, guildId: 'g1' });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/discord-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ bankChannelId: 'not-a-snowflake' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a negative minPayoutGp', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+    await DiscordServerConfig.create({ communityId: community._id, guildId: 'g1' });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/discord-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ minPayoutGp: -1 });
+    expect(res.status).toBe(400);
+  });
+
+  it('updates the fields present in the body and leaves the rest unchanged', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+    await DiscordServerConfig.create({
+      communityId: community._id,
+      guildId: 'g1',
+      bankChannelId: SNOWFLAKE_1,
+      supportRoleIds: [SNOWFLAKE_1],
+      autoAddSplashers: false,
+      minPayoutGp: 10_000_000,
+    });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/discord-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ minPayoutGp: 5_000_000, autoAddSplashers: true, supportRoleIds: [SNOWFLAKE_1, SNOWFLAKE_2] });
+    expect(res.status).toBe(200);
+    expect(res.body.config.minPayoutGp).toBe(5_000_000);
+    expect(res.body.config.autoAddSplashers).toBe(true);
+    expect(res.body.config.supportRoleIds).toEqual([SNOWFLAKE_1, SNOWFLAKE_2]);
+    expect(res.body.config.bankChannelId).toBe(SNOWFLAKE_1); // untouched
+
+    const reloaded = await DiscordServerConfig.findOne({ communityId: community._id }).lean();
+    expect(reloaded!.bankChannelId).toBe(SNOWFLAKE_1);
+    expect(reloaded!.guildId).toBe('g1'); // never touched by this route
+  });
+
+  it('clears a channel id field when given an empty string', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+    await DiscordServerConfig.create({ communityId: community._id, guildId: 'g1', bankChannelId: SNOWFLAKE_1 });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/discord-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ bankChannelId: '' });
+    expect(res.status).toBe(200);
+    expect(res.body.config.bankChannelId).toBeUndefined();
+  });
+});
+
 describe('PUT /api/communities/:communityId/discord-invite', () => {
   it('sets and clears the invite URL, rejecting invalid values', async () => {
     const alice = await createUser('alice', { communityEligible: true });

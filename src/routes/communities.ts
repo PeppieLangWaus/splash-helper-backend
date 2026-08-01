@@ -8,6 +8,7 @@ import { Rank } from '../models/Rank';
 import { DiscordServerConfig } from '../models/DiscordServerConfig';
 import { SplasherApplication } from '../models/SplasherApplication';
 import { resolveWebhookField, resolveInviteUrlField } from '../services/discordWebhook';
+import { resolveIdField, resolveIdListField } from '../services/discordIds';
 import { getOrCreateDefaultRank, setMemberRank, assignDefaultRank, getMapEntry } from '../services/ranks';
 import { randomBytes } from 'crypto';
 
@@ -409,6 +410,115 @@ router.put('/:communityId/discord-invite', async (req: Request, res: Response): 
 
   await community.save();
   res.json({ community });
+});
+
+/**
+ * GET /api/communities/:communityId/discord-config
+ * Returns this community's /setup configuration (channel/role ids, auto-add, bank settings)
+ * — the same document the Discord bot's /setup wizard writes via the community-token-authenticated
+ * /api/community-bot/discord-config route. null until the owner has run /setup at least once.
+ * Owner or admin only.
+ */
+router.get('/:communityId/discord-config', async (req: Request, res: Response): Promise<void> => {
+  const community = await loadOwnedCommunity(req, res);
+  if (!community) return;
+
+  const config = await DiscordServerConfig.findOne({ communityId: community._id }).lean();
+  res.json({ config });
+});
+
+/**
+ * PUT /api/communities/:communityId/discord-config
+ * Body: { supportRoleIds?, supportTicketChannelId?, splasherLinkChannelId?, historyChannelId?,
+ *         activeWorldsChannelId?, autoAddSplashers?, bankChannelId?, bankManagerRoleIds?,
+ *         minPayoutGp? }
+ * Edits the same config the /setup wizard collects — every field is optional and omitting one
+ * leaves it unchanged; an empty string/array clears it. Requires the community to have already
+ * run /setup at least once, since guildId is only ever established by that bootstrap handshake
+ * and this route never touches it. Owner or admin only.
+ */
+router.put('/:communityId/discord-config', async (req: Request, res: Response): Promise<void> => {
+  const community = await loadOwnedCommunity(req, res);
+  if (!community) return;
+
+  const config = await DiscordServerConfig.findOne({ communityId: community._id });
+  if (!config) {
+    res.status(404).json({
+      error: 'Run /setup in Discord first to link this server before editing its config here.',
+    });
+    return;
+  }
+
+  const body = req.body as Partial<{
+    supportRoleIds: unknown;
+    supportTicketChannelId: unknown;
+    splasherLinkChannelId: unknown;
+    historyChannelId: unknown;
+    activeWorldsChannelId: unknown;
+    autoAddSplashers: unknown;
+    bankChannelId: unknown;
+    bankManagerRoleIds: unknown;
+    minPayoutGp: unknown;
+  }>;
+
+  const supportTicketChannelIdUpdate = resolveIdField(body.supportTicketChannelId);
+  const splasherLinkChannelIdUpdate = resolveIdField(body.splasherLinkChannelId);
+  const historyChannelIdUpdate = resolveIdField(body.historyChannelId);
+  const activeWorldsChannelIdUpdate = resolveIdField(body.activeWorldsChannelId);
+  const bankChannelIdUpdate = resolveIdField(body.bankChannelId);
+  const supportRoleIdsUpdate = resolveIdListField(body.supportRoleIds);
+  const bankManagerRoleIdsUpdate = resolveIdListField(body.bankManagerRoleIds);
+
+  const anyInvalid = [
+    supportTicketChannelIdUpdate,
+    splasherLinkChannelIdUpdate,
+    historyChannelIdUpdate,
+    activeWorldsChannelIdUpdate,
+    bankChannelIdUpdate,
+    supportRoleIdsUpdate,
+    bankManagerRoleIdsUpdate,
+  ].some((u) => u.action === 'invalid');
+  if (anyInvalid) {
+    res.status(400).json({ error: 'Channel and role ids must be valid Discord snowflakes (17-20 digits)' });
+    return;
+  }
+
+  if (body.autoAddSplashers !== undefined && typeof body.autoAddSplashers !== 'boolean') {
+    res.status(400).json({ error: 'autoAddSplashers must be a boolean' });
+    return;
+  }
+
+  if (body.minPayoutGp !== undefined) {
+    const { minPayoutGp } = body;
+    if (typeof minPayoutGp !== 'number' || !Number.isFinite(minPayoutGp) || minPayoutGp < 0) {
+      res.status(400).json({ error: 'minPayoutGp must be a non-negative number' });
+      return;
+    }
+    config.minPayoutGp = minPayoutGp;
+  }
+
+  if (supportTicketChannelIdUpdate.action === 'set') config.supportTicketChannelId = supportTicketChannelIdUpdate.value;
+  else if (supportTicketChannelIdUpdate.action === 'clear') config.supportTicketChannelId = undefined;
+
+  if (splasherLinkChannelIdUpdate.action === 'set') config.splasherLinkChannelId = splasherLinkChannelIdUpdate.value;
+  else if (splasherLinkChannelIdUpdate.action === 'clear') config.splasherLinkChannelId = undefined;
+
+  if (historyChannelIdUpdate.action === 'set') config.historyChannelId = historyChannelIdUpdate.value;
+  else if (historyChannelIdUpdate.action === 'clear') config.historyChannelId = undefined;
+
+  if (activeWorldsChannelIdUpdate.action === 'set') config.activeWorldsChannelId = activeWorldsChannelIdUpdate.value;
+  else if (activeWorldsChannelIdUpdate.action === 'clear') config.activeWorldsChannelId = undefined;
+
+  if (bankChannelIdUpdate.action === 'set') config.bankChannelId = bankChannelIdUpdate.value;
+  else if (bankChannelIdUpdate.action === 'clear') config.bankChannelId = undefined;
+
+  if (supportRoleIdsUpdate.action === 'set') config.supportRoleIds = supportRoleIdsUpdate.value;
+  if (bankManagerRoleIdsUpdate.action === 'set') config.bankManagerRoleIds = bankManagerRoleIdsUpdate.value;
+
+  if (body.autoAddSplashers !== undefined) config.autoAddSplashers = body.autoAddSplashers as boolean;
+
+  await config.save();
+  res.json({ config });
 });
 
 /**
