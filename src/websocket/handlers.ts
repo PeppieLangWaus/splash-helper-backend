@@ -19,6 +19,7 @@ import {
 import { upsertArchivedSessionNotification } from '../services/discordWebhook';
 import { updateActiveSessionsEmbed } from '../services/discordGateway';
 import { getAll as getActiveSessions } from './sessionManager';
+import { log, logError, logWarn } from '../utils/logger';
 import {
   WsIncomingMessage,
   WsOutgoingMessage,
@@ -51,7 +52,7 @@ async function maybeGrantLocalDevAdmin(user: IUser): Promise<void> {
   user.isAdmin = true;
   user.communityEligible = true;
   await user.save();
-  console.log(`[dev] Auto-granted admin to local dev account "${user.username}"`);
+  log(`[dev] Auto-granted admin to local dev account "${user.username}"`);
 }
 
 export async function handleAuth(ws: WebSocket, msg: WsAuthMessage): Promise<void> {
@@ -75,7 +76,7 @@ export async function handleAuth(ws: WebSocket, msg: WsAuthMessage): Promise<voi
       setupLinkUsed: false,
     });
   } else if (user.token !== token) {
-    console.log(`WS AUTH_FAILURE for "${username}": token mismatch`);
+    log(`WS AUTH_FAILURE for "${username}": token mismatch`);
     send(ws, { type: 'AUTH_FAILURE', reason: 'Invalid token' });
     return;
   }
@@ -101,7 +102,7 @@ export async function handleAuth(ws: WebSocket, msg: WsAuthMessage): Promise<voi
   const setupRequired = !user.setupLinkUsed;
   const setupLink = setupRequired ? generateSetupLink(username) : undefined;
 
-  console.log(`WS AUTH_SUCCESS for "${username}": setupRequired=${setupRequired}`);
+  log(`WS AUTH_SUCCESS for "${username}": setupRequired=${setupRequired}`);
   send(ws, { type: 'AUTH_SUCCESS', setupRequired, setupLink });
 }
 
@@ -127,12 +128,12 @@ export function handleSessionUpdate(ws: WebSocket, msg: WsSessionMessage): void 
 
 function toTimestamp(value: string | undefined, fallback: number, label: string): number {
   if (!value) {
-    console.warn(`archiveSession: missing ${label}, falling back to current time`);
+    logWarn(`archiveSession: missing ${label}, falling back to current time`);
     return fallback;
   }
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) {
-    console.warn(`archiveSession: unparseable ${label} "${value}", falling back to current time`);
+    logWarn(`archiveSession: unparseable ${label} "${value}", falling back to current time`);
     return fallback;
   }
   return parsed;
@@ -241,7 +242,7 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
 
     if (existing) {
       if (finalizedTimestamp <= existing.finalizedTimestamp) {
-        console.warn(
+        logWarn(
           `archiveSession: ignoring stale/out-of-order resend for "${username}" (createdTimestamp=${createdTimestamp})`,
         );
         return;
@@ -302,7 +303,7 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
     }
     await notifyExtraWebhooks(user, createdEntry, created);
   } catch (err) {
-    console.error(`Failed to archive session for "${username}":`, err);
+    logError(`Failed to archive session for "${username}":`, err);
   }
 }
 
@@ -338,7 +339,7 @@ export async function handleDisconnect(ws: WebSocket): Promise<void> {
   const state = getSessionForSocket(ws);
   if (!state) return;
 
-  console.log(`WS disconnected for "${state.username}"`);
+  log(`WS disconnected for "${state.username}"`);
   if (state.sessionData === null) {
     removeSession(state.username);
   }
@@ -356,7 +357,7 @@ let sweepInProgress = false;
  */
 export async function sweepInactiveSessions(maxAgeMs: number): Promise<void> {
   if (sweepInProgress) {
-    console.log('Sweep already in progress, skipping this tick');
+    log('Sweep already in progress, skipping this tick');
     return;
   }
   sweepInProgress = true;
@@ -376,7 +377,7 @@ export async function sweepInactiveSessions(maxAgeMs: number): Promise<void> {
       // may have let a reconnect or SESSION_END remove/replace this entry.
       if (getSession(state.username) !== state) continue;
 
-      console.log(`Sweeping inactive session for "${state.username}" (last update ${Math.round((now - state.lastUpdate) / 1000)}s ago)`);
+      log(`Sweeping inactive session for "${state.username}" (last update ${Math.round((now - state.lastUpdate) / 1000)}s ago)`);
       removeSession(state.username);
       await archiveSession(state.username, state.sessionData!);
     }
