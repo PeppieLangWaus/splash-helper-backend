@@ -2,6 +2,7 @@ import { WebhookClient, EmbedBuilder } from 'discord.js';
 import { ActiveSessionState } from '../types';
 import { Community } from '../models/Community';
 import { User } from '../models/User';
+import { DiscordEmbedMessage } from '../models/DiscordEmbedMessage';
 
 const WEBHOOK_URL = process.env.DISCORD_ACTIVE_WEBHOOK_URL ?? '';
 
@@ -21,6 +22,9 @@ const CONFIG_CACHE_TTL_MS = process.env.DISCORD_COMMUNITY_CACHE_TTL_MS !== undef
   : 15_000;
 
 interface EmbedTarget {
+  /** Stable identifier for this embed's scope ('global', `community:<id>`,
+   *  `splasher:<id>`), used as the persistence key — see loadPersistedMessageId. */
+  key: string;
   title: string;
   webhookUrl: string;
 }
@@ -29,24 +33,68 @@ interface EmbedState {
   target: EmbedTarget;
   client: WebhookClient;
   activeMessageId: string | null;
+  // Resolves once activeMessageId has been (attempted to be) loaded from the DB, so the
+  // very first patchActiveEmbed() call after a restart waits for it instead of racing
+  // ahead and posting a duplicate message before the persisted id is known.
+  loaded: Promise<void>;
   lastEmbedUpdate: number;
   pendingSessions: ActiveSessionState[] | null;
   pendingTimer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * Loads a previously-persisted message id for this embed, so a redeploy/restart resumes
+ * editing the same Discord message instead of losing track of it and posting a new one.
+ * Ignored if the persisted record belongs to a since-changed webhook URL (e.g. the
+ * community/splasher rotated their webhook) — that message is no longer reachable via the
+ * current client and shouldn't be edited.
+ */
+async function loadPersistedMessageId(target: EmbedTarget): Promise<string | null> {
+  try {
+    const doc = await DiscordEmbedMessage.findOne({ key: target.key }).lean();
+    if (!doc || doc.webhookUrl !== target.webhookUrl) return null;
+    return doc.messageId;
+  } catch (err) {
+    console.error(`Failed to load persisted embed message id for "${target.key}":`, (err as Error).message);
+    return null;
+  }
+}
+
+/** Persists (or, when messageId is null, clears) the message id so it survives a restart. */
+async function persistMessageId(target: EmbedTarget, messageId: string | null): Promise<void> {
+  try {
+    if (messageId) {
+      await DiscordEmbedMessage.findOneAndUpdate(
+        { key: target.key },
+        { key: target.key, webhookUrl: target.webhookUrl, messageId },
+        { upsert: true },
+      );
+    } else {
+      await DiscordEmbedMessage.deleteOne({ key: target.key });
+    }
+  } catch (err) {
+    console.error(`Failed to persist embed message id for "${target.key}":`, (err as Error).message);
+  }
+}
+
 function createEmbedState(target: EmbedTarget): EmbedState {
-  return {
+  const state: EmbedState = {
     target,
     client: new WebhookClient({ url: target.webhookUrl }),
     activeMessageId: null,
+    loaded: Promise.resolve(),
     lastEmbedUpdate: 0,
     pendingSessions: null,
     pendingTimer: null,
   };
+  state.loaded = loadPersistedMessageId(target).then((id) => {
+    state.activeMessageId = id;
+  });
+  return state;
 }
 
 const globalState: EmbedState | null = WEBHOOK_URL
-  ? createEmbedState({ title: 'Active Splashers', webhookUrl: WEBHOOK_URL })
+  ? createEmbedState({ key: 'global', title: 'Active Splashers', webhookUrl: WEBHOOK_URL })
   : null;
 
 // One throttled embed state per community/splasher that currently has an active-sessions
@@ -112,6 +160,7 @@ async function refreshConfigsIfStale(): Promise<void> {
 function reconcileStates<T extends WebhookConfig>(
   states: Map<string, EmbedState>,
   configs: T[],
+  keyPrefix: string,
   titleFor: (config: T) => string,
 ): void {
   const configuredIds = new Set(configs.map((c) => c.id));
@@ -122,7 +171,10 @@ function reconcileStates<T extends WebhookConfig>(
   for (const config of configs) {
     const existing = states.get(config.id);
     if (!existing || existing.target.webhookUrl !== config.webhookUrl) {
-      states.set(config.id, createEmbedState({ title: titleFor(config), webhookUrl: config.webhookUrl }));
+      states.set(
+        config.id,
+        createEmbedState({ key: `${keyPrefix}:${config.id}`, title: titleFor(config), webhookUrl: config.webhookUrl }),
+      );
     }
   }
 }
@@ -147,14 +199,14 @@ export function updateActiveSessionsEmbed(sessions: ActiveSessionState[]): void 
 async function updateScopedEmbeds(sessions: ActiveSessionState[]): Promise<void> {
   await refreshConfigsIfStale();
 
-  reconcileStates(communityStates, communityConfigCache, (c) => `Active Splashers — ${c.name}`);
+  reconcileStates(communityStates, communityConfigCache, 'community', (c) => `Active Splashers — ${c.name}`);
   for (const config of communityConfigCache) {
     const state = communityStates.get(config.id)!;
     const memberSessions = sessions.filter((s) => config.memberIds.has(s.userId));
     scheduleEmbedUpdate(state, memberSessions);
   }
 
-  reconcileStates(splasherStates, splasherConfigCache, (c) => `Active Session — ${c.username}`);
+  reconcileStates(splasherStates, splasherConfigCache, 'splasher', (c) => `Active Session — ${c.username}`);
   for (const config of splasherConfigCache) {
     const state = splasherStates.get(config.id)!;
     const ownSession = sessions.filter((s) => s.userId === config.id);
@@ -185,6 +237,11 @@ function scheduleEmbedUpdate(state: EmbedState, sessions: ActiveSessionState[]):
 }
 
 async function patchActiveEmbed(state: EmbedState, sessions: ActiveSessionState[]): Promise<void> {
+  // Wait for the persisted message id (if any) to finish loading before deciding whether
+  // to edit or send — otherwise the first update after a restart could race ahead and post
+  // a duplicate message before the DB lookup resolves.
+  await state.loaded;
+
   const activeSessions = sessions.filter((s) => s.authenticated && s.sessionData !== null);
   const embed = buildActiveSessionsEmbed(state.target.title, activeSessions);
 
@@ -193,9 +250,11 @@ async function patchActiveEmbed(state: EmbedState, sessions: ActiveSessionState[
       // Edit the existing message
       await state.client.editMessage(state.activeMessageId, { embeds: [embed] });
     } else {
-      // Send a new message and remember its ID
+      // Send a new message, remember its ID, and persist it so a future restart can
+      // keep editing this same message instead of losing track of it.
       const msg = await state.client.send({ embeds: [embed] });
       state.activeMessageId = msg.id;
+      await persistMessageId(state.target, msg.id);
       console.log(`Discord active sessions message created (${state.target.title}): ${state.activeMessageId}`);
     }
   } catch (err: unknown) {
@@ -204,6 +263,7 @@ async function patchActiveEmbed(state: EmbedState, sessions: ActiveSessionState[
       // Unknown Message — the old message was deleted; send a new one
       console.warn(`Active sessions message was deleted (${state.target.title}), sending a new one`);
       state.activeMessageId = null;
+      await persistMessageId(state.target, null);
       await patchActiveEmbed(state, sessions);
     } else {
       console.error(`Failed to update active sessions embed (${state.target.title}):`, (err as Error).message);
