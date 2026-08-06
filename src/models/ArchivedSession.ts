@@ -38,6 +38,7 @@ const SessionDataSchema = new Schema<SessionData>(
     endTime: { type: String },
     highestPlayerCount: { type: Number, required: true },
     averagePlayerCount: { type: Number, required: true },
+    currentPlayerCount: { type: Number },
     pickpocketerCount: { type: Number, required: true },
     startingRuneCount: { type: Number, required: true },
     currentRuneCount: { type: Number, required: true },

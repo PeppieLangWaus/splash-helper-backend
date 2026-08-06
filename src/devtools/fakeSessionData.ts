@@ -27,6 +27,7 @@ export function randomFakeSessionData(username: string, overrides: Partial<Sessi
     knightMovements: randomInt(0, 30),
     highestPlayerCount: randomInt(0, 8),
     averagePlayerCount: Number((Math.random() * 6).toFixed(1)),
+    currentPlayerCount: randomInt(0, 8),
     pickpocketerCount: randomInt(0, 4),
     startingRuneCount: 10_000,
     currentRuneCount: Math.max(0, 10_000 - spellsCast * runeCostPerCast),

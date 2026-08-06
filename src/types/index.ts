@@ -20,6 +20,8 @@ export interface SessionData {
   endTime?: string;
   highestPlayerCount: number;
   averagePlayerCount: number;
+  /** Live nearby-player count at the moment of this update (as opposed to highest/average). */
+  currentPlayerCount?: number;
   pickpocketerCount: number;
   startingRuneCount: number;
   currentRuneCount: number;
