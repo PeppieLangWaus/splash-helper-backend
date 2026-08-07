@@ -20,8 +20,13 @@ const SWEEP_INTERVAL_MS = 2 * 60 * 1000; // check every 2 minutes
 const app = express();
 const PORT = process.env.PORT ?? 3000;
 
+const allowedOrigins = (process.env.CORS_ORIGIN_API ?? process.env.CORS_ORIGIN_WS)
+  ?.split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
 app.use(cors({
-  origin: process.env.CORS_ORIGIN_API ?? process.env.CORS_ORIGIN_WS,
+  origin: allowedOrigins,
 }));
 app.use(express.json({ limit: '10mb' }));
 
