@@ -173,6 +173,73 @@ describe('updateActiveSessionsEmbed — per-community webhooks', () => {
   });
 });
 
+describe('updateActiveSessionsEmbed — message id survives a restart', () => {
+  // Each EmbedState is created fresh (activeMessageId starting out unknown) the first time
+  // a given community/splasher id is seen, which is exactly what happens for every
+  // config on a real process restart — so a community id that's brand new to this test
+  // file exercises the same code path as "the backend just redeployed".
+  it('edits a message from a previous process instead of posting a new one', async () => {
+    const alice = await User.create({ username: 'alice', passwordHash: 'h', token: 't1', isAdmin: false, setupLinkUsed: true });
+    const community = await Community.create({
+      name: 'Restart Squad',
+      ownerIds: [alice._id],
+      memberUserIds: [alice._id],
+      discordActiveWebhookUrl: 'https://discord.com/api/webhooks/555/restart-token',
+    });
+    const { DiscordEmbedMessage } = require('../../models/DiscordEmbedMessage') as typeof import('../../models/DiscordEmbedMessage');
+    await DiscordEmbedMessage.create({
+      key: `community:${community._id.toString()}`,
+      webhookUrl: 'https://discord.com/api/webhooks/555/restart-token',
+      messageId: 'message-from-before-restart',
+    });
+
+    updateActiveSessionsEmbed([makeActiveSession(alice._id.toString(), 'alice')]);
+    await waitForCalls(mockEditMessage, 1);
+
+    expect(mockEditMessage.mock.calls[0][0]).toBe('message-from-before-restart');
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('persists a newly-posted message id so it can be reused after a restart', async () => {
+    const alice = await User.create({ username: 'alice', passwordHash: 'h', token: 't1', isAdmin: false, setupLinkUsed: true });
+    const community = await Community.create({
+      name: 'Fresh Squad',
+      ownerIds: [alice._id],
+      memberUserIds: [alice._id],
+      discordActiveWebhookUrl: 'https://discord.com/api/webhooks/666/fresh-token',
+    });
+
+    updateActiveSessionsEmbed([makeActiveSession(alice._id.toString(), 'alice')]);
+    await waitForCalls(mockSend, 1);
+
+    const { DiscordEmbedMessage } = require('../../models/DiscordEmbedMessage') as typeof import('../../models/DiscordEmbedMessage');
+    const persisted = await DiscordEmbedMessage.findOne({ key: `community:${community._id.toString()}` }).lean();
+    expect(persisted?.messageId).toBe('active-msg-1');
+    expect(persisted?.webhookUrl).toBe('https://discord.com/api/webhooks/666/fresh-token');
+  });
+
+  it('ignores a persisted message id left over from a since-rotated webhook', async () => {
+    const alice = await User.create({ username: 'alice', passwordHash: 'h', token: 't1', isAdmin: false, setupLinkUsed: true });
+    const community = await Community.create({
+      name: 'Rotated Squad',
+      ownerIds: [alice._id],
+      memberUserIds: [alice._id],
+      discordActiveWebhookUrl: 'https://discord.com/api/webhooks/777/new-token',
+    });
+    const { DiscordEmbedMessage } = require('../../models/DiscordEmbedMessage') as typeof import('../../models/DiscordEmbedMessage');
+    await DiscordEmbedMessage.create({
+      key: `community:${community._id.toString()}`,
+      webhookUrl: 'https://discord.com/api/webhooks/777/old-token',
+      messageId: 'message-on-old-webhook',
+    });
+
+    updateActiveSessionsEmbed([makeActiveSession(alice._id.toString(), 'alice')]);
+    await waitForCalls(mockSend, 1);
+
+    expect(mockEditMessage).not.toHaveBeenCalled();
+  });
+});
+
 describe('updateActiveSessionsEmbed — per-splasher webhooks', () => {
   it('posts a personal embed scoped to just that splasher\'s own session', async () => {
     const alice = await User.create({
