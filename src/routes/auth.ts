@@ -12,6 +12,11 @@ const JWT_SECRET = requireEnv('JWT_SECRET');
 const SETUP_LINK_SECRET = process.env.SETUP_LINK_SECRET ?? JWT_SECRET;
 const SETUP_LINK_EXPIRY = (process.env.SETUP_LINK_EXPIRY ?? '24h') as `${number}${'s'|'m'|'h'|'d'}` | undefined;
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+// Both optional: if either is unset (e.g. local dev without the shortener running),
+// generateSetupLink() just returns the long URL instead of calling out.
+const SHORTENER_API_URL = process.env.SHORTENER_API_URL;
+const SHORTENER_API_KEY = process.env.SHORTENER_API_KEY;
+const SHORTENER_TIMEOUT_MS = 2500;
 
 /**
  * POST /auth/login
@@ -141,13 +146,48 @@ router.post('/reset-password', resetPasswordLimiter, async (req: Request, res: R
 });
 
 /**
- * Generates a signed setup link JWT for a given username.
+ * Generates a signed setup link JWT for a given username, then tries to shrink it
+ * via the Ardy Host URL shortener (splasher.help/setup?token=... -> link.ardy.host/<user>)
+ * so it's actually usable pasted into a RuneLite chatbox. The shortener is a separate,
+ * independently-deployed service — if it's unreachable, misconfigured, or simply not
+ * set up (SHORTENER_API_URL/SHORTENER_API_KEY unset), this always falls back to the
+ * long URL rather than letting a shortener outage block account setup.
  * Called internally by the WebSocket AUTH handler.
  */
-export function generateSetupLink(username: string): string {
+export async function generateSetupLink(username: string): Promise<string> {
   const payload: SetupLinkJwtPayload = { purpose: 'account-setup', username };
   const token = jwt.sign(payload, SETUP_LINK_SECRET, { expiresIn: SETUP_LINK_EXPIRY ?? '24h' });
-  return `${FRONTEND_URL}/setup?token=${token}`;
+  const longUrl = `${FRONTEND_URL}/setup?token=${token}`;
+
+  if (!SHORTENER_API_URL || !SHORTENER_API_KEY) {
+    return longUrl;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SHORTENER_TIMEOUT_MS);
+  try {
+    const response = await fetch(SHORTENER_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': SHORTENER_API_KEY },
+      body: JSON.stringify({ url: longUrl }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`shortener responded ${response.status}`);
+    }
+
+    const data = (await response.json()) as { shortUrl?: string };
+    if (!data.shortUrl) {
+      throw new Error('shortener response missing shortUrl');
+    }
+    return data.shortUrl;
+  } catch (err) {
+    console.error('generateSetupLink: falling back to long URL, shortener call failed:', err);
+    return longUrl;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export default router;

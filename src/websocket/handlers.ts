@@ -100,7 +100,7 @@ export async function handleAuth(ws: WebSocket, msg: WsAuthMessage): Promise<voi
   setSession(username, state);
 
   const setupRequired = !user.setupLinkUsed;
-  const setupLink = setupRequired ? generateSetupLink(username) : undefined;
+  const setupLink = setupRequired ? await generateSetupLink(username) : undefined;
 
   log(`WS AUTH_SUCCESS for "${username}": setupRequired=${setupRequired}`);
   send(ws, { type: 'AUTH_SUCCESS', setupRequired, setupLink });
