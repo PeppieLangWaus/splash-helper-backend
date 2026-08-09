@@ -19,12 +19,14 @@ import {
 import { upsertArchivedSessionNotification } from '../services/discordWebhook';
 import { updateActiveSessionsEmbed } from '../services/discordGateway';
 import { getAll as getActiveSessions } from './sessionManager';
+import { subscribeChat, unsubscribeChat } from './chatBroadcast';
 import { log, logError, logWarn } from '../utils/logger';
 import {
   WsIncomingMessage,
   WsOutgoingMessage,
   WsAuthMessage,
   WsSessionMessage,
+  WsSubscribeChatMessage,
   SessionData,
   SplashEntry,
 } from '../types';
@@ -336,6 +338,9 @@ export async function handleSessionEnd(ws: WebSocket, msg: WsSessionMessage): Pr
  * session data, so an idle authenticated placeholder would otherwise never be cleaned up.
  */
 export async function handleDisconnect(ws: WebSocket): Promise<void> {
+  // Unconditional: a socket may be a pure frontend chat viewer with no splash session at all.
+  unsubscribeChat(ws);
+
   const state = getSessionForSocket(ws);
   if (!state) return;
 
@@ -406,6 +411,21 @@ export async function handleMessage(ws: WebSocket, raw: string): Promise<void> {
 
   if (msg.type === 'AUTH') {
     await handleAuth(ws, msg as WsAuthMessage);
+    return;
+  }
+
+  // Chat subscriptions are read-only and come from frontend viewers, not the RuneLite plugin —
+  // deliberately handled before the auth gate below, since a viewer never sends AUTH at all.
+  if (msg.type === 'SUBSCRIBE_CHAT') {
+    const { communityId, channelType } = msg as WsSubscribeChatMessage;
+    if (typeof communityId !== 'string' || !communityId || (channelType !== 'fc' && channelType !== 'cc')) {
+      return;
+    }
+    subscribeChat(ws, communityId, channelType);
+    return;
+  }
+  if (msg.type === 'UNSUBSCRIBE_CHAT') {
+    unsubscribeChat(ws);
     return;
   }
 

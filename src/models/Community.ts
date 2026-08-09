@@ -12,6 +12,20 @@ export interface ICommunity extends Document {
   /** Public invite link for this community's Discord server. Shown alongside a splasher's
    *  identity on the public active-sessions feed, and owner-configurable like the webhooks. */
   discordInviteUrl?: string;
+  /** @deprecated Replaced by discordFriendsChatWebhookUrl/discordClanChatWebhookUrl. Kept in the
+   *  schema (read-only from application code) purely so the one-time migration in src/index.ts
+   *  can copy any pre-existing value into both new fields, then unset it. Do not read/write this
+   *  from anywhere else. */
+  discordChatWebhookUrl?: string;
+  /** Discord webhooks that relayed Friends Chat / Clan Chat messages get forwarded to — see
+   *  services/chatRelay.ts. Independent of each other and of
+   *  discordActiveWebhookUrl/discordHistoryWebhookUrl. */
+  discordFriendsChatWebhookUrl?: string;
+  discordClanChatWebhookUrl?: string;
+  /** Sources the owner has blocked from this community's chat relay, e.g. after someone abuses
+   *  the shared chat.splasher.help endpoint. Matched by IP and/or the sender name a message
+   *  claims — see shouldBlockChatSource in services/chatRelay.ts. Either field may be set alone. */
+  blockedChatSources: { ip?: string; playerName?: string; blockedAt: Date }[];
   /** Bearer credential for the `/api/community-bot/*` routes and any other external
    *  community-scoped API access. Stored in plaintext, same convention as `User.token` —
    *  it's shown back to the owner (Account Settings) rather than a show-once secret. */
@@ -30,6 +44,16 @@ const CommunitySchema = new Schema<ICommunity>(
     discordActiveWebhookUrl: { type: String },
     discordHistoryWebhookUrl: { type: String },
     discordInviteUrl: { type: String },
+    discordChatWebhookUrl: { type: String },
+    discordFriendsChatWebhookUrl: { type: String },
+    discordClanChatWebhookUrl: { type: String },
+    blockedChatSources: [
+      {
+        ip: { type: String },
+        playerName: { type: String },
+        blockedAt: { type: Date, required: true, default: Date.now },
+      },
+    ],
     apiToken: {
       type: String,
       required: true,
