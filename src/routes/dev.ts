@@ -3,10 +3,12 @@ import { WebSocket } from 'ws';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
+import mongoose from 'mongoose';
 import {
   get as getSession,
   set as setSession,
   remove as removeSession,
+  clear as clearSessions,
   updateSessionData,
 } from '../websocket/sessionManager';
 import { randomFakeSessionData, randomFakeHistoricalSessions } from '../devtools/fakeSessionData';
@@ -30,6 +32,28 @@ const router = Router();
 const DEFAULT_DEV_ADMIN_USERNAME = 'DevAdmin';
 
 /**
+ * POST /dev/reset
+ * Wipes every collection in the dev database and clears in-memory active
+ * sessions, so `npm run dev:local`'s otherwise-persistent data (see
+ * src/devtools/localServer.ts) can be blown away on demand instead of only
+ * by deleting .devdata/mongo by hand. Meant to back a "Reset dev data"
+ * button in the frontend's dev view — dev-only, mounted only when
+ * NODE_ENV !== 'production' (see app.ts), no auth required.
+ */
+router.post('/reset', async (_req: Request, res: Response): Promise<void> => {
+  clearSessions();
+
+  const collections = mongoose.connection.collections;
+  const cleared: string[] = [];
+  for (const name of Object.keys(collections)) {
+    await collections[name].deleteMany({});
+    cleared.push(name);
+  }
+
+  res.json({ message: 'Dev data reset', collectionsCleared: cleared });
+});
+
+/**
  * POST /dev/admin-token
  * Body: { username?: string }
  * Mints an admin + communityEligible JWT for the given username (default
@@ -45,16 +69,34 @@ router.post('/admin-token', async (req: Request, res: Response): Promise<void> =
 
   let user = await User.findOne({ username });
   if (!user) {
+    // findOne-then-create raced here: two near-simultaneous calls (e.g. React StrictMode
+    // double-invoking the frontend's dev auto-login effect) could both see no existing user and
+    // both attempt User.create, so the loser hit an unhandled duplicate-key rejection that took
+    // the whole process down. upsert makes the creation itself atomic — the loser just gets back
+    // the winner's row instead of erroring.
     const passwordHash = await bcrypt.hash(randomUUID(), 12);
-    user = await User.create({
-      username,
-      passwordHash,
-      token: randomUUID(),
-      isAdmin: true,
-      setupLinkUsed: false,
-      communityEligible: true,
-    });
-  } else if (!user.isAdmin || !user.communityEligible) {
+    user = await User.findOneAndUpdate(
+      { username },
+      {
+        $setOnInsert: {
+          username,
+          passwordHash,
+          token: randomUUID(),
+          isAdmin: true,
+          setupLinkUsed: false,
+          communityEligible: true,
+        },
+      },
+      { upsert: true, new: true },
+    );
+    // upsert + new:true always returns the (new-or-existing) document — this null check is only
+    // to satisfy the type checker's conservative typing of findOneAndUpdate.
+    if (!user) {
+      res.status(500).json({ error: 'Failed to create dev admin user' });
+      return;
+    }
+  }
+  if (!user.isAdmin || !user.communityEligible) {
     user.isAdmin = true;
     user.communityEligible = true;
     await user.save();

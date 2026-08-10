@@ -5,7 +5,8 @@ import { ArchivedSession } from '../../models/ArchivedSession';
 import { Community } from '../../models/Community';
 import { makeSessionData } from '../fixtures';
 import * as sessionManager from '../../websocket/sessionManager';
-import { handleMessage } from '../../websocket/handlers';
+import { handleMessage, handleDisconnect } from '../../websocket/handlers';
+import { broadcastChatMessage } from '../../websocket/chatBroadcast';
 
 // Prevent actual Discord calls
 jest.mock('../../services/discordWebhook', () => ({
@@ -359,5 +360,103 @@ describe('WebSocket session lifecycle', () => {
     await handleMessage(ws, 'not-json{{{');
     const msg = (ws as unknown as MockWebSocket).lastMessage();
     expect(msg.type).toBe('AUTH_FAILURE');
+  });
+});
+
+describe('Chat subscription (SUBSCRIBE_CHAT / UNSUBSCRIBE_CHAT)', () => {
+  // Fresh, effectively-unique community id per test so the (unreset, module-level) chat
+  // ring buffer from an earlier test can't bleed into this one.
+  let communityId: string;
+  beforeEach(() => {
+    communityId = `community-${Math.random()}`;
+  });
+
+  it('acks with an empty recent list, no AUTH required', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+    const msg = (ws as unknown as MockWebSocket).lastMessage();
+    expect(msg).toEqual({ type: 'CHAT_SUBSCRIBED', communityId, channelType: 'fc', recent: [] });
+  });
+
+  it('backfills messages that were already broadcast before subscribing', async () => {
+    broadcastChatMessage(communityId, 'cc', 'Zezima', 'hello before you joined');
+
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'cc' }));
+    const msg = (ws as unknown as MockWebSocket).lastMessage();
+    expect(msg.type).toBe('CHAT_SUBSCRIBED');
+    expect(msg.recent).toHaveLength(1);
+    expect(msg.recent[0]).toMatchObject({ communityId, channelType: 'cc', sender: 'Zezima', message: 'hello before you joined' });
+  });
+
+  it('delivers a CHAT_MESSAGE broadcast to a matching subscriber', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+
+    broadcastChatMessage(communityId, 'fc', 'Woox', 'gz on the pet');
+
+    const msg = (ws as unknown as MockWebSocket).lastMessage();
+    expect(msg).toMatchObject({
+      type: 'CHAT_MESSAGE',
+      communityId,
+      channelType: 'fc',
+      sender: 'Woox',
+      message: 'gz on the pet',
+    });
+  });
+
+  it('does not deliver a broadcast for a different channelType on the same community', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+
+    broadcastChatMessage(communityId, 'cc', 'Woox', 'wrong channel');
+
+    expect((ws as unknown as MockWebSocket).sent).toHaveLength(1); // only the CHAT_SUBSCRIBED ack
+  });
+
+  it('does not deliver a broadcast for a different community', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+
+    broadcastChatMessage(`${communityId}-other`, 'fc', 'Woox', 'wrong community');
+
+    expect((ws as unknown as MockWebSocket).sent).toHaveLength(1);
+  });
+
+  it('re-subscribing to a different channel replaces the previous subscription', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'cc' }));
+
+    broadcastChatMessage(communityId, 'fc', 'Woox', 'old channel, should not arrive');
+    expect((ws as unknown as MockWebSocket).sent).toHaveLength(2); // the two CHAT_SUBSCRIBED acks only
+
+    broadcastChatMessage(communityId, 'cc', 'Woox', 'new channel, should arrive');
+    expect((ws as unknown as MockWebSocket).sent).toHaveLength(3);
+  });
+
+  it('UNSUBSCRIBE_CHAT stops further delivery', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+    await handleMessage(ws, JSON.stringify({ type: 'UNSUBSCRIBE_CHAT' }));
+
+    broadcastChatMessage(communityId, 'fc', 'Woox', 'after unsubscribe');
+    expect((ws as unknown as MockWebSocket).sent).toHaveLength(1); // only the CHAT_SUBSCRIBED ack
+  });
+
+  it('disconnecting unsubscribes the socket', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+    await handleDisconnect(ws);
+
+    broadcastChatMessage(communityId, 'fc', 'Woox', 'after disconnect');
+    expect((ws as unknown as MockWebSocket).sent).toHaveLength(1); // only the CHAT_SUBSCRIBED ack
+  });
+
+  it('silently ignores SUBSCRIBE_CHAT with a missing communityId or invalid channelType', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', channelType: 'fc' }));
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'trade' }));
+    expect((ws as unknown as MockWebSocket).sent).toHaveLength(0);
   });
 });

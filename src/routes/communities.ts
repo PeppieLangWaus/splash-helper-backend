@@ -4,12 +4,20 @@ import { requireAuth } from '../middleware/auth';
 import { User } from '../models/User';
 import { Community } from '../models/Community';
 import { ArchivedSession } from '../models/ArchivedSession';
+import { BankTicket } from '../models/BankTicket';
 import { Rank } from '../models/Rank';
 import { DiscordServerConfig } from '../models/DiscordServerConfig';
 import { SplasherApplication } from '../models/SplasherApplication';
 import { resolveWebhookField, resolveInviteUrlField } from '../services/discordWebhook';
 import { resolveIdField, resolveIdListField } from '../services/discordIds';
 import { getOrCreateDefaultRank, setMemberRank, assignDefaultRank, getMapEntry } from '../services/ranks';
+import {
+  resolveChatChannelNameField,
+  resolveDisplayNameField,
+  applyChatChannelNameUpdate,
+  getRecentChatSources,
+} from '../services/chatRelay';
+import { ChatChannelName } from '../models/ChatChannelName';
 import { randomBytes } from 'crypto';
 
 const router = Router();
@@ -212,6 +220,48 @@ router.get('/:communityId/sessions', async (req: Request, res: Response): Promis
 });
 
 /**
+ * GET /api/communities/:communityId/my-payouts
+ * The calling user's own payout ticket history in this community — powers the chatbox's Trade
+ * tab (splash-helper-frontend's useAccountActivityEvents), which derives earned/paid-out/balance
+ * client-side from this plus the splasher's own archived-session earnings (GET /splashers/
+ * :username already returns those). Self-scoped by definition — always just the caller's own
+ * tickets — so any authenticated user may call it, no owner/admin gate needed unlike the rest of
+ * this file.
+ */
+router.get('/:communityId/my-payouts', async (req: Request, res: Response): Promise<void> => {
+  const community = await Community.findById(req.params.communityId);
+  if (!community) {
+    res.status(404).json({ error: 'Community not found' });
+    return;
+  }
+
+  const requester = await User.findOne({ username: req.user!.sub }, { _id: 1 }).lean();
+  if (!requester) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  const tickets = await BankTicket.find(
+    { communityId: community._id, requestedByUserId: requester._id, type: 'payout' },
+    { amountGp: 1, status: 1, createdAt: 1, resolvedAt: 1 },
+  )
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .lean();
+
+  res.json({
+    communityName: community.name,
+    payouts: tickets.map((t) => ({
+      id: (t._id as Types.ObjectId).toString(),
+      amountGp: t.amountGp,
+      status: t.status,
+      createdAt: t.createdAt.getTime(),
+      resolvedAt: t.resolvedAt ? t.resolvedAt.getTime() : null,
+    })),
+  });
+});
+
+/**
  * GET /api/communities/:communityId/ranks
  * List all ranks for this community. Owner or admin only.
  */
@@ -410,6 +460,167 @@ router.put('/:communityId/discord-invite', async (req: Request, res: Response): 
 
   await community.save();
   res.json({ community });
+});
+
+/**
+ * GET /api/communities/:communityId/chat-config
+ * Returns this community's registered Friends/Clan Chat names and chat Discord webhook — the
+ * settings that drive the global chat.splasher.help / chat.ardy.host relay (services/chatRelay.ts).
+ * Owner or admin only.
+ */
+router.get('/:communityId/chat-config', async (req: Request, res: Response): Promise<void> => {
+  const community = await loadOwnedCommunity(req, res);
+  if (!community) return;
+
+  const names = await ChatChannelName.find({ communityId: community._id }).lean();
+  res.json({
+    friendsChatName: names.find((n) => n.channelType === 'fc')?.name ?? null,
+    friendsChatDisplayName: names.find((n) => n.channelType === 'fc')?.displayName ?? null,
+    clanChatName: names.find((n) => n.channelType === 'cc')?.name ?? null,
+    discordFriendsChatWebhookUrl: community.discordFriendsChatWebhookUrl ?? null,
+    discordClanChatWebhookUrl: community.discordClanChatWebhookUrl ?? null,
+  });
+});
+
+/**
+ * PUT /api/communities/:communityId/chat-config
+ * Body: { friendsChatName?, friendsChatDisplayName?, clanChatName?, discordFriendsChatWebhookUrl?,
+ *          discordClanChatWebhookUrl?: string | null }
+ * Registers this community's Friends/Clan Chat names (each must be globally unique — see
+ * ChatChannelName), the Friends Chat's cosmetic display name, and/or its two chat-relay Discord
+ * webhooks. Any field may be omitted to leave it unchanged; an empty string clears it. Owner or
+ * admin only.
+ */
+router.put('/:communityId/chat-config', async (req: Request, res: Response): Promise<void> => {
+  const community = await loadOwnedCommunity(req, res);
+  if (!community) return;
+
+  const {
+    friendsChatName,
+    friendsChatDisplayName,
+    clanChatName,
+    discordFriendsChatWebhookUrl,
+    discordClanChatWebhookUrl,
+  } = req.body as {
+    friendsChatName?: unknown;
+    friendsChatDisplayName?: unknown;
+    clanChatName?: unknown;
+    discordFriendsChatWebhookUrl?: unknown;
+    discordClanChatWebhookUrl?: unknown;
+  };
+
+  const communityId = community._id as Types.ObjectId;
+  const [friendsUpdate, clanUpdate] = await Promise.all([
+    resolveChatChannelNameField(friendsChatName, communityId, 'fc'),
+    resolveChatChannelNameField(clanChatName, communityId, 'cc'),
+  ]);
+  const displayNameUpdate = resolveDisplayNameField(friendsChatDisplayName);
+  const friendsWebhookUpdate = resolveWebhookField(discordFriendsChatWebhookUrl);
+  const clanWebhookUpdate = resolveWebhookField(discordClanChatWebhookUrl);
+
+  if (friendsUpdate.action === 'invalid' || clanUpdate.action === 'invalid') {
+    res.status(400).json({ error: 'Chat names must be non-empty strings under 100 characters' });
+    return;
+  }
+  if (displayNameUpdate.action === 'invalid') {
+    res.status(400).json({ error: 'Display name must be a non-empty string under 100 characters' });
+    return;
+  }
+  if (friendsUpdate.action === 'taken') {
+    res.status(409).json({ error: 'That Friends Chat name is already registered to another community' });
+    return;
+  }
+  if (clanUpdate.action === 'taken') {
+    res.status(409).json({ error: 'That Clan Chat name is already registered to another community' });
+    return;
+  }
+  if (friendsWebhookUpdate.action === 'invalid' || clanWebhookUpdate.action === 'invalid') {
+    res.status(400).json({ error: 'Not a valid Discord webhook URL' });
+    return;
+  }
+
+  await Promise.all([
+    applyChatChannelNameUpdate(communityId, 'fc', friendsUpdate, displayNameUpdate),
+    applyChatChannelNameUpdate(communityId, 'cc', clanUpdate),
+  ]);
+
+  if (friendsWebhookUpdate.action === 'set') community.discordFriendsChatWebhookUrl = friendsWebhookUpdate.value;
+  else if (friendsWebhookUpdate.action === 'clear') community.discordFriendsChatWebhookUrl = undefined;
+  if (clanWebhookUpdate.action === 'set') community.discordClanChatWebhookUrl = clanWebhookUpdate.value;
+  else if (clanWebhookUpdate.action === 'clear') community.discordClanChatWebhookUrl = undefined;
+  await community.save();
+
+  const names = await ChatChannelName.find({ communityId }).lean();
+  res.json({
+    friendsChatName: names.find((n) => n.channelType === 'fc')?.name ?? null,
+    friendsChatDisplayName: names.find((n) => n.channelType === 'fc')?.displayName ?? null,
+    clanChatName: names.find((n) => n.channelType === 'cc')?.name ?? null,
+    discordFriendsChatWebhookUrl: community.discordFriendsChatWebhookUrl ?? null,
+    discordClanChatWebhookUrl: community.discordClanChatWebhookUrl ?? null,
+  });
+});
+
+/**
+ * GET /api/communities/:communityId/chat-sources
+ * Recent sources (IP + claimed player name) seen posting to this community's chat relay, plus
+ * the current block-list, so the owner can see who to block. Owner or admin only.
+ */
+router.get('/:communityId/chat-sources', async (req: Request, res: Response): Promise<void> => {
+  const community = await loadOwnedCommunity(req, res);
+  if (!community) return;
+
+  res.json({
+    recent: getRecentChatSources((community._id as Types.ObjectId).toString()),
+    blocked: community.blockedChatSources,
+  });
+});
+
+/**
+ * POST /api/communities/:communityId/chat-sources/block
+ * Body: { ip?: string; playerName?: string } — at least one required.
+ * Blocks a source from this community's chat relay going forward. Owner or admin only.
+ */
+router.post('/:communityId/chat-sources/block', async (req: Request, res: Response): Promise<void> => {
+  const community = await loadOwnedCommunity(req, res);
+  if (!community) return;
+
+  const { ip, playerName } = req.body as { ip?: unknown; playerName?: unknown };
+  const trimmedIp = typeof ip === 'string' ? ip.trim() : '';
+  const trimmedName = typeof playerName === 'string' ? playerName.trim() : '';
+  if (!trimmedIp && !trimmedName) {
+    res.status(400).json({ error: 'ip or playerName is required' });
+    return;
+  }
+
+  community.blockedChatSources.push({
+    ip: trimmedIp || undefined,
+    playerName: trimmedName || undefined,
+    blockedAt: new Date(),
+  });
+  await community.save();
+  res.status(201).json({ blockedChatSources: community.blockedChatSources });
+});
+
+/**
+ * DELETE /api/communities/:communityId/chat-sources/block
+ * Body: { ip?: string; playerName?: string }
+ * Removes matching entries from the block-list. Owner or admin only.
+ */
+router.delete('/:communityId/chat-sources/block', async (req: Request, res: Response): Promise<void> => {
+  const community = await loadOwnedCommunity(req, res);
+  if (!community) return;
+
+  const { ip, playerName } = req.body as { ip?: unknown; playerName?: unknown };
+  const trimmedIp = typeof ip === 'string' ? ip.trim() : undefined;
+  const trimmedName = typeof playerName === 'string' ? playerName.trim().toLowerCase() : undefined;
+
+  community.blockedChatSources = community.blockedChatSources.filter((blocked) => {
+    const matchesIp = !!trimmedIp && blocked.ip === trimmedIp;
+    const matchesName = !!trimmedName && blocked.playerName?.toLowerCase() === trimmedName;
+    return !(matchesIp || matchesName);
+  });
+  await community.save();
+  res.json({ blockedChatSources: community.blockedChatSources });
 });
 
 /**

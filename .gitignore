@@ -140,3 +140,7 @@ vite.config.ts.timestamp-*
 
 test-data
 db.json
+
+# Persistent data for `npm run dev:local` (see src/devtools/localServer.ts).
+# Wipe via POST /dev/reset, or just delete this directory.
+.devdata/

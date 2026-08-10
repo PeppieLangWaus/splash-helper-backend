@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import type { ICommunity } from '../models/Community';
+import type { ChatChannelType } from '../models/ChatChannelName';
 
 export interface RuneUsageMap {
   [runeId: string]: number;
@@ -56,7 +57,11 @@ export type WsMessageType =
   | 'SESSION_END'
   | 'AUTH_SUCCESS'
   | 'AUTH_FAILURE'
-  | 'ACK';
+  | 'ACK'
+  | 'SUBSCRIBE_CHAT'
+  | 'UNSUBSCRIBE_CHAT'
+  | 'CHAT_SUBSCRIBED'
+  | 'CHAT_MESSAGE';
 
 export interface WsAuthMessage {
   type: 'AUTH';
@@ -69,7 +74,23 @@ export interface WsSessionMessage {
   sessionData: SessionData;
 }
 
-export type WsIncomingMessage = WsAuthMessage | WsSessionMessage;
+/**
+ * Sent by a frontend viewer (not the RuneLite plugin) to watch one community's Friends Chat or
+ * Clan Chat feed — see websocket/chatBroadcast.ts. Deliberately requires no AUTH: it's a
+ * read-only subscription, not a splash session. Subscribing again replaces any previous
+ * subscription on the same socket (a viewer only watches one channel at a time).
+ */
+export interface WsSubscribeChatMessage {
+  type: 'SUBSCRIBE_CHAT';
+  communityId: string;
+  channelType: ChatChannelType;
+}
+
+export interface WsUnsubscribeChatMessage {
+  type: 'UNSUBSCRIBE_CHAT';
+}
+
+export type WsIncomingMessage = WsAuthMessage | WsSessionMessage | WsSubscribeChatMessage | WsUnsubscribeChatMessage;
 
 export interface WsAuthSuccessResponse {
   type: 'AUTH_SUCCESS';
@@ -86,7 +107,41 @@ export interface WsAckResponse {
   type: 'ACK';
 }
 
-export type WsOutgoingMessage = WsAuthSuccessResponse | WsAuthFailureResponse | WsAckResponse;
+/** One chat-relay message, broadcast to every socket subscribed to this community+channel. */
+export interface ChatBroadcastMessage {
+  id: string;
+  communityId: string;
+  channelType: ChatChannelType;
+  sender?: string;
+  message: string;
+  timestamp: number;
+  /** The sender's FC/CC rank, resolved to a display name + icon via services/rankIcons.ts (see
+   *  RuneLite's FriendsChatRank/ClanRank). Omitted when the payload's rank has no fixed identity
+   *  we can resolve server-side (unranked FC, or one of a clan's own custom-titled ranks). */
+  rank?: number;
+  rankName?: string;
+  rankIconUrl?: string;
+}
+
+/** Acks a SUBSCRIBE_CHAT and backfills recent history (see chatBroadcast's ring buffer) so the
+ *  chatbox isn't blank while waiting for the next live message. */
+export interface WsChatSubscribedResponse {
+  type: 'CHAT_SUBSCRIBED';
+  communityId: string;
+  channelType: ChatChannelType;
+  recent: ChatBroadcastMessage[];
+}
+
+export interface WsChatMessageResponse extends ChatBroadcastMessage {
+  type: 'CHAT_MESSAGE';
+}
+
+export type WsOutgoingMessage =
+  | WsAuthSuccessResponse
+  | WsAuthFailureResponse
+  | WsAckResponse
+  | WsChatSubscribedResponse
+  | WsChatMessageResponse;
 
 // ── Active session state (in-memory) ────────────────────────────────────────
 
