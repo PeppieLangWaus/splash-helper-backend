@@ -3,10 +3,12 @@ import { WebSocket } from 'ws';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
+import mongoose from 'mongoose';
 import {
   get as getSession,
   set as setSession,
   remove as removeSession,
+  clear as clearSessions,
   updateSessionData,
 } from '../websocket/sessionManager';
 import { randomFakeSessionData, randomFakeHistoricalSessions } from '../devtools/fakeSessionData';
@@ -28,6 +30,28 @@ const JWT_SECRET = requireEnv('JWT_SECRET');
 
 const router = Router();
 const DEFAULT_DEV_ADMIN_USERNAME = 'DevAdmin';
+
+/**
+ * POST /dev/reset
+ * Wipes every collection in the dev database and clears in-memory active
+ * sessions, so `npm run dev:local`'s otherwise-persistent data (see
+ * src/devtools/localServer.ts) can be blown away on demand instead of only
+ * by deleting .devdata/mongo by hand. Meant to back a "Reset dev data"
+ * button in the frontend's dev view — dev-only, mounted only when
+ * NODE_ENV !== 'production' (see app.ts), no auth required.
+ */
+router.post('/reset', async (_req: Request, res: Response): Promise<void> => {
+  clearSessions();
+
+  const collections = mongoose.connection.collections;
+  const cleared: string[] = [];
+  for (const name of Object.keys(collections)) {
+    await collections[name].deleteMany({});
+    cleared.push(name);
+  }
+
+  res.json({ message: 'Dev data reset', collectionsCleared: cleared });
+});
 
 /**
  * POST /dev/admin-token
