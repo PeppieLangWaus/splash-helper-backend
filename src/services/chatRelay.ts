@@ -4,6 +4,7 @@ import { ChatChannelName, ChatChannelType, normalizeChatChannelName } from '../m
 import { forwardChatWebhookPayload } from './discordWebhook';
 import { RankInfo, getFriendsChatRankInfo, getClanRankIconUrl } from './rankIcons';
 import { broadcastChatMessage } from '../websocket/chatBroadcast';
+import { persistChatMessage } from './chatHistory';
 import { log, logWarn } from '../utils/logger';
 
 // Discord's own message length cap — also used as a sanity ceiling for the in-game message text.
@@ -279,7 +280,16 @@ export async function handleChatRelayPayload(rawMessage: unknown, sourceIp: stri
     });
   }
 
-  broadcastChatMessage(binding.communityId, binding.channelType, parsed.sender, parsed.message, parsed.rankInfo ?? undefined);
+  const broadcast = broadcastChatMessage(
+    binding.communityId,
+    binding.channelType,
+    parsed.sender,
+    parsed.message,
+    parsed.rankInfo ?? undefined,
+  );
+  // Fire-and-forget: persistence failures shouldn't hold up (or fail) the relay response — see
+  // persistChatMessage's own doc comment.
+  void persistChatMessage(broadcast);
 
   log(`Chat relay: ${binding.channelType} message for community ${binding.communityId} from ${parsed.sender}`);
   return { status: 'forwarded', communityId: binding.communityId, channelType: binding.channelType };
