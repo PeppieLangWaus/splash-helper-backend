@@ -38,14 +38,16 @@ export function unsubscribeChat(ws: WebSocket): void {
 /** Buffers a message for late joiners and pushes it to every socket currently watching this
  *  community+channel. Called by chatRelay.ts once a relayed message has been classified and
  *  allowed through — independent of whether that community has a Discord webhook configured.
- *  `rank` is optional so existing (pre-rank) callers keep working unchanged. */
+ *  `rank` is optional so existing (pre-rank) callers keep working unchanged. Returns the payload
+ *  it broadcast, so the caller can hand the exact same id/timestamp to services/chatHistory.ts
+ *  for persistence. */
 export function broadcastChatMessage(
   communityId: string,
   channelType: ChatChannelType,
   sender: string | undefined,
   message: string,
   rank?: RankInfo,
-): void {
+): ChatBroadcastMessage {
   const payload: ChatBroadcastMessage = {
     id: randomUUID(),
     communityId,
@@ -67,4 +69,6 @@ export function broadcastChatMessage(
       send(ws, { type: 'CHAT_MESSAGE', ...payload });
     }
   }
+
+  return payload;
 }

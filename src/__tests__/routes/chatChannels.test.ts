@@ -4,6 +4,8 @@ import { connectTestDB, disconnectTestDB, clearCollections } from '../testDb';
 import { createTestApp } from '../testApp';
 import { Community } from '../../models/Community';
 import { ChatChannelName } from '../../models/ChatChannelName';
+import { persistChatMessage } from '../../services/chatHistory';
+import { ChatBroadcastMessage } from '../../types';
 
 const app = createTestApp();
 
@@ -85,5 +87,71 @@ describe('GET /api/chat-channels', () => {
 
     const res = await request(app).get('/api/chat-channels');
     expect(res.body.channels).toEqual([]);
+  });
+});
+
+describe('GET /api/chat-channels/:communityId/:channelType/messages', () => {
+  function makeMessage(communityId: string, overrides: Partial<ChatBroadcastMessage> = {}): ChatBroadcastMessage {
+    return {
+      id: 'live-id',
+      communityId,
+      channelType: 'fc',
+      sender: 'Zezima',
+      message: 'hello',
+      timestamp: Date.now(),
+      ...overrides,
+    };
+  }
+
+  it('requires no auth and returns persisted history oldest-first', async () => {
+    const community = await Community.create({ name: 'Ardy Hosts', ownerIds: [new Types.ObjectId()], memberUserIds: [] });
+    const communityId = (community._id as Types.ObjectId).toString();
+    const base = Date.now();
+    await persistChatMessage(makeMessage(communityId, { message: 'first', timestamp: base }));
+    await persistChatMessage(makeMessage(communityId, { message: 'second', timestamp: base + 1000 }));
+
+    const res = await request(app).get(`/api/chat-channels/${communityId}/fc/messages`);
+    expect(res.status).toBe(200);
+    expect(res.body.messages.map((m: { message: string }) => m.message)).toEqual(['first', 'second']);
+  });
+
+  it('returns an empty list for a community with no history yet', async () => {
+    const res = await request(app).get(`/api/chat-channels/${new Types.ObjectId().toString()}/fc/messages`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ messages: [] });
+  });
+
+  it('rejects an invalid communityId', async () => {
+    const res = await request(app).get('/api/chat-channels/not-an-id/fc/messages');
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an invalid channelType', async () => {
+    const res = await request(app).get(`/api/chat-channels/${new Types.ObjectId().toString()}/xx/messages`);
+    expect(res.status).toBe(400);
+  });
+
+  it('keeps fc and cc history separate', async () => {
+    const community = await Community.create({ name: 'Ardy Hosts', ownerIds: [new Types.ObjectId()], memberUserIds: [] });
+    const communityId = (community._id as Types.ObjectId).toString();
+    await persistChatMessage(makeMessage(communityId, { channelType: 'fc', message: 'fc line' }));
+    await persistChatMessage(makeMessage(communityId, { channelType: 'cc', message: 'cc line' }));
+
+    const fcRes = await request(app).get(`/api/chat-channels/${communityId}/fc/messages`);
+    const ccRes = await request(app).get(`/api/chat-channels/${communityId}/cc/messages`);
+    expect(fcRes.body.messages.map((m: { message: string }) => m.message)).toEqual(['fc line']);
+    expect(ccRes.body.messages.map((m: { message: string }) => m.message)).toEqual(['cc line']);
+  });
+
+  it('respects a limit query param, capped at the max', async () => {
+    const community = await Community.create({ name: 'Ardy Hosts', ownerIds: [new Types.ObjectId()], memberUserIds: [] });
+    const communityId = (community._id as Types.ObjectId).toString();
+    const base = Date.now();
+    for (let i = 0; i < 5; i++) {
+      await persistChatMessage(makeMessage(communityId, { message: `msg-${i}`, timestamp: base + i * 1000 }));
+    }
+
+    const res = await request(app).get(`/api/chat-channels/${communityId}/fc/messages?limit=2`);
+    expect(res.body.messages.map((m: { message: string }) => m.message)).toEqual(['msg-3', 'msg-4']);
   });
 });
