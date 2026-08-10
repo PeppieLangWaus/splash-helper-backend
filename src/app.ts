@@ -3,12 +3,16 @@ import http from 'http';
 import express from 'express';
 import cors from 'cors';
 import { connectDB } from './db';
+import { migrateLegacyChatWebhooks } from './services/chatWebhookMigration';
+import { syncChatChannelNameIndexes } from './models/ChatChannelName';
 import splashersRouter from './routes/splashers';
 import sessionsRouter from './routes/sessions';
 import authRouter from './routes/auth';
 import adminRouter from './routes/admin';
 import communitiesRouter from './routes/communities';
 import communityBotRouter from './routes/communityBot';
+import chatRelayRouter from './routes/chatRelay';
+import chatChannelsRouter from './routes/chatChannels';
 import devRouter from './routes/dev';
 import { attachWebSocketServer } from './websocket/server';
 import { sweepInactiveSessions } from './websocket/handlers';
@@ -19,6 +23,11 @@ const SWEEP_INTERVAL_MS = 2 * 60 * 1000; // check every 2 minutes
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
+
+// Trust nginx's X-Forwarded-For/X-Real-IP (see nginx/splasher.help.conf) so req.ip reflects the
+// actual client rather than the reverse proxy — needed for the chat relay's per-source
+// block-list (services/chatRelay.ts) to work at all.
+app.set('trust proxy', 1);
 
 const allowedOrigins = (process.env.CORS_ORIGIN_API ?? process.env.CORS_ORIGIN_WS)
   ?.split(',')
@@ -36,6 +45,8 @@ app.use('/auth', authRouter);
 app.use('/admin', adminRouter);
 app.use('/communities', communitiesRouter);
 app.use('/community-bot', communityBotRouter);
+app.use('/chat-relay', chatRelayRouter);
+app.use('/chat-channels', chatChannelsRouter);
 
 if (process.env.NODE_ENV !== 'production') {
   app.use('/dev', devRouter);
@@ -50,6 +61,8 @@ attachWebSocketServer(httpServer);
 
 async function start(): Promise<void> {
   await connectDB();
+  await migrateLegacyChatWebhooks();
+  await syncChatChannelNameIndexes();
   httpServer.listen(PORT, () => {
     console.log(`Splash Helper API listening on http://localhost:${PORT}`);
   });

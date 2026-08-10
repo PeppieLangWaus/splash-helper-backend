@@ -10,6 +10,8 @@ import authRouter from '../routes/auth';
 import adminRouter from '../routes/admin';
 import communitiesRouter from '../routes/communities';
 import communityBotRouter from '../routes/communityBot';
+import chatChannelsRouter from '../routes/chatChannels';
+import chatRelayRouter from '../routes/chatRelay';
 
 export function createTestApp() {
   const app = express();
@@ -21,6 +23,8 @@ export function createTestApp() {
   app.use('/api/admin', adminRouter);
   app.use('/api/communities', communitiesRouter);
   app.use('/api/community-bot', communityBotRouter);
+  app.use('/api/chat-channels', chatChannelsRouter);
+  app.use('/api/chat-relay', chatRelayRouter);
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   return app;
 }

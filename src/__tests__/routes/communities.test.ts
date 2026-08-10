@@ -7,6 +7,7 @@ import { User } from '../../models/User';
 import { Community } from '../../models/Community';
 import { ArchivedSession } from '../../models/ArchivedSession';
 import { DiscordServerConfig } from '../../models/DiscordServerConfig';
+import { ChatChannelName } from '../../models/ChatChannelName';
 import { makeSessionData } from '../fixtures';
 
 const app = createTestApp();
@@ -509,5 +510,221 @@ describe('PUT /api/communities/:communityId/discord-invite', () => {
       .set('Authorization', `Bearer ${makeToken('alice')}`)
       .send({ discordInviteUrl: '' });
     expect(cleared.body.community.discordInviteUrl).toBeUndefined();
+  });
+});
+
+describe('GET and PUT /api/communities/:communityId/chat-config', () => {
+  it('denies access to a non-owner, non-admin user', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    await createUser('mallory');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .get(`/api/communities/${community._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('mallory')}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('returns nulls when nothing is configured yet', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .get(`/api/communities/${community._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      friendsChatName: null,
+      friendsChatDisplayName: null,
+      clanChatName: null,
+      discordFriendsChatWebhookUrl: null,
+      discordClanChatWebhookUrl: null,
+    });
+  });
+
+  it('sets Friends/Clan Chat names, the FC display name, and both chat webhooks', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({
+        friendsChatName: 'Ardy Splash',
+        friendsChatDisplayName: 'Ardy Splashers',
+        clanChatName: 'Ardy Splash CC',
+        discordFriendsChatWebhookUrl: VALID_WEBHOOK_1,
+        discordClanChatWebhookUrl: VALID_WEBHOOK_2,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      friendsChatName: 'Ardy Splash',
+      friendsChatDisplayName: 'Ardy Splashers',
+      clanChatName: 'Ardy Splash CC',
+      discordFriendsChatWebhookUrl: VALID_WEBHOOK_1,
+      discordClanChatWebhookUrl: VALID_WEBHOOK_2,
+    });
+
+    const names = await ChatChannelName.find({ communityId: community._id }).lean();
+    expect(names).toHaveLength(2);
+  });
+
+  it('rejects a Friends/Clan Chat name already registered to a different community', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const bob = await createUser('bob', { communityEligible: true });
+    const communityA = await Community.create({ name: 'A', ownerIds: [alice._id], memberUserIds: [] });
+    const communityB = await Community.create({ name: 'B', ownerIds: [bob._id], memberUserIds: [] });
+
+    await request(app)
+      .put(`/api/communities/${communityA._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ friendsChatName: 'Shared Name' })
+      .expect(200);
+
+    const res = await request(app)
+      .put(`/api/communities/${communityB._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('bob')}`)
+      .send({ friendsChatName: 'Shared Name' });
+    expect(res.status).toBe(409);
+
+    const namesForB = await ChatChannelName.find({ communityId: communityB._id }).lean();
+    expect(namesForB).toHaveLength(0);
+  });
+
+  it('allows the same name to be used as both a Friends Chat and a Clan Chat name', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const bob = await createUser('bob', { communityEligible: true });
+    const communityA = await Community.create({ name: 'A', ownerIds: [alice._id], memberUserIds: [] });
+    const communityB = await Community.create({ name: 'B', ownerIds: [bob._id], memberUserIds: [] });
+
+    // Same community, same name, both channel types.
+    const sameRes = await request(app)
+      .put(`/api/communities/${communityA._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ friendsChatName: 'Ardy Splash', clanChatName: 'Ardy Splash' });
+    expect(sameRes.status).toBe(200);
+    expect(sameRes.body.friendsChatName).toBe('Ardy Splash');
+    expect(sameRes.body.clanChatName).toBe('Ardy Splash');
+
+    // A different community can also register that same name as the other channel type.
+    const otherRes = await request(app)
+      .put(`/api/communities/${communityB._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('bob')}`)
+      .send({ clanChatName: 'Ardy Splash 2' })
+      .expect(200);
+    expect(otherRes.body.clanChatName).toBe('Ardy Splash 2');
+  });
+
+  it('allows re-saving the same name for the community that already owns it', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    await request(app)
+      .put(`/api/communities/${community._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ friendsChatName: 'Ardy Splash' })
+      .expect(200);
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ friendsChatName: 'Ardy Splash', clanChatName: 'Ardy CC' });
+    expect(res.status).toBe(200);
+    expect(res.body.friendsChatName).toBe('Ardy Splash');
+    expect(res.body.clanChatName).toBe('Ardy CC');
+  });
+
+  it('rejects an invalid Discord webhook URL', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ discordFriendsChatWebhookUrl: 'not-a-webhook' });
+    expect(res.status).toBe(400);
+  });
+
+  it('clears a Friends Chat name when set to an empty string', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    await request(app)
+      .put(`/api/communities/${community._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ friendsChatName: 'Ardy Splash' })
+      .expect(200);
+
+    const res = await request(app)
+      .put(`/api/communities/${community._id}/chat-config`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ friendsChatName: '' });
+    expect(res.status).toBe(200);
+    expect(res.body.friendsChatName).toBeNull();
+
+    const doc = await ChatChannelName.findOne({ communityId: community._id, channelType: 'fc' }).lean();
+    expect(doc).toBeNull();
+  });
+});
+
+describe('Chat source block-list (/chat-sources)', () => {
+  it('denies access to a non-owner, non-admin user', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    await createUser('mallory');
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .get(`/api/communities/${community._id}/chat-sources`)
+      .set('Authorization', `Bearer ${makeToken('mallory')}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('blocks a source by IP and lists it', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const block = await request(app)
+      .post(`/api/communities/${community._id}/chat-sources/block`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ ip: '9.9.9.9' });
+    expect(block.status).toBe(201);
+    expect(block.body.blockedChatSources).toHaveLength(1);
+    expect(block.body.blockedChatSources[0].ip).toBe('9.9.9.9');
+
+    const list = await request(app)
+      .get(`/api/communities/${community._id}/chat-sources`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`);
+    expect(list.body.blocked).toHaveLength(1);
+    expect(list.body.recent).toEqual([]);
+  });
+
+  it('requires ip or playerName to block', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    const res = await request(app)
+      .post(`/api/communities/${community._id}/chat-sources/block`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('unblocks a source by playerName, case-insensitively', async () => {
+    const alice = await createUser('alice', { communityEligible: true });
+    const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
+
+    await request(app)
+      .post(`/api/communities/${community._id}/chat-sources/block`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ playerName: 'Griefer' })
+      .expect(201);
+
+    const unblock = await request(app)
+      .delete(`/api/communities/${community._id}/chat-sources/block`)
+      .set('Authorization', `Bearer ${makeToken('alice')}`)
+      .send({ playerName: 'griefer' });
+    expect(unblock.status).toBe(200);
+    expect(unblock.body.blockedChatSources).toEqual([]);
   });
 });
