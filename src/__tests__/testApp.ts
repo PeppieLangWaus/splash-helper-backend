@@ -15,6 +15,9 @@ import chatRelayRouter from '../routes/chatRelay';
 
 export function createTestApp() {
   const app = express();
+  // Mirrors app.ts so tests can simulate distinct anonymous voters via X-Forwarded-For
+  // (see routes/splashers.ts vote endpoints).
+  app.set('trust proxy', 1);
   app.use(cors());
   app.use(express.json({ limit: '10mb' }));
   app.use('/api/splashers', splashersRouter);
