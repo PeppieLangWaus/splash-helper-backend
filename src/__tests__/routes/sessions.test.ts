@@ -58,7 +58,7 @@ describe('POST /api/sessions/upload', () => {
   });
 
   it('deduplicates sessions with same createdTimestamp + finalizedTimestamp', async () => {
-    const entry = makeSplashEntry({ createdTimestamp: 1000, finalizedTimestamp: 2000 });
+    const entry = makeSplashEntry({ createdTimestamp: 1000, finalizedTimestamp: 1000 + 20 * 60_000 });
 
     const res1 = await request(app).post('/api/sessions/upload').send([entry]);
     expect(res1.body.added).toBe(1);

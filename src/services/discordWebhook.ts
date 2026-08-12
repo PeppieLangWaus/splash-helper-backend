@@ -114,11 +114,14 @@ async function sendWebhook(webhookUrl: string, username: string, entries: Splash
  * Post a single archived-session notification, or edit a previous one in place when
  * `existingMessageId` is given — e.g. a session that was finalized on a brief inactivity
  * timeout, then resumed and finalized again with more casts/XP, updates its original post
- * instead of adding a duplicate. Falls back to posting a new message if the edit target no
- * longer exists (e.g. manually deleted from Discord).
+ * instead of adding a duplicate. Falls back to posting a new message only when Discord
+ * confirms the edit target is truly gone (code 10008, "Unknown Message" — e.g. manually
+ * deleted). Any other edit failure (rate limiting, a network blip, a transient Discord
+ * 5xx) keeps the existing id instead, since the original message is most likely still
+ * there — posting a new one in that case would just duplicate it.
  *
  * Returns the id of the message that now reflects this entry, or undefined if no webhook is
- * configured or the request failed.
+ * configured or the request failed outright (no existing message to fall back to).
  */
 export function upsertArchivedSessionNotification(
   webhookUrl: string,
@@ -139,9 +142,21 @@ export function upsertArchivedSessionNotification(
           resolve(msg.id);
           return;
         } catch (err) {
+          const apiErr = err as { code?: number };
+          if (apiErr.code !== 10008) {
+            // Anything other than "Unknown Message" (rate limiting, a network blip, a
+            // transient Discord 5xx, ...) means the original message is probably still
+            // there — falling through to post a new one would duplicate it. Keep the
+            // existing id and let the next update retry the edit instead.
+            console.error(
+              `Failed to edit archived-session message ${existingMessageId} for "${username}":`,
+              (err as Error).message,
+            );
+            resolve(existingMessageId);
+            return;
+          }
           console.warn(
-            `Failed to edit archived-session message ${existingMessageId} for "${username}", posting a new one instead:`,
-            (err as Error).message,
+            `Archived-session message ${existingMessageId} for "${username}" no longer exists, posting a new one instead`,
           );
         }
       }

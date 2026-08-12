@@ -5,6 +5,7 @@ import { User } from '../models/User';
 import { ArchivedSession } from '../models/ArchivedSession';
 import { SplashEntry } from '../types';
 import { enqueueWebhookNotification } from '../services/discordWebhook';
+import { MIN_ARCHIVABLE_SESSION_DURATION_MS } from '../websocket/handlers';
 
 const router = Router();
 
@@ -26,6 +27,11 @@ router.post('/upload', async (req: Request, res: Response): Promise<void> => {
 
     for (const entry of entries) {
       if (!entry?.sessionId || !entry?.session?.playerName) {
+        skipped++;
+        continue;
+      }
+
+      if (entry.finalizedTimestamp - entry.createdTimestamp < MIN_ARCHIVABLE_SESSION_DURATION_MS) {
         skipped++;
         continue;
       }

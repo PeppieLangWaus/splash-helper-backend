@@ -126,6 +126,11 @@ export function handleSessionUpdate(ws: WebSocket, msg: WsSessionMessage): void 
 
 // ── Shared archive helper ─────────────────────────────────────────────────────
 
+/** Splash sessions shorter than this are considered noise (a brief hop-through, a
+ *  misfire, etc.) and are neither archived nor announced — on either the live
+ *  WebSocket path or the manual /sessions/upload path. */
+export const MIN_ARCHIVABLE_SESSION_DURATION_MS = 10 * 60 * 1000;
+
 function toTimestamp(value: string | undefined, fallback: number, label: string): number {
   if (!value) {
     logWarn(`archiveSession: missing ${label}, falling back to current time`);
@@ -231,6 +236,11 @@ async function archiveSession(username: string, sessionData: SessionData): Promi
   // splash session actually took place.
   const createdTimestamp = toTimestamp(sessionData.startTime, now, 'startTime');
   const finalizedTimestamp = toTimestamp(sessionData.endTime ?? sessionData.logoutTime, now, 'endTime/logoutTime');
+
+  if (finalizedTimestamp - createdTimestamp < MIN_ARCHIVABLE_SESSION_DURATION_MS) {
+    log(`archiveSession: skipping short session for "${username}" (${Math.round((finalizedTimestamp - createdTimestamp) / 1000)}s < ${MIN_ARCHIVABLE_SESSION_DURATION_MS / 1000}s minimum)`);
+    return;
+  }
 
   try {
     // A session that gets finalized on a brief inactivity timeout, then resumed and

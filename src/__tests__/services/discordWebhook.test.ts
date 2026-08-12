@@ -187,8 +187,9 @@ describe('upsertArchivedSessionNotification', () => {
     expect(result).toBe('edited-msg-id');
   });
 
-  it('falls back to posting a new message if editing fails (e.g. message was deleted)', async () => {
-    mockEditMessage.mockRejectedValueOnce(new Error('Unknown Message'));
+  it('falls back to posting a new message if the edit target is truly gone (Discord code 10008)', async () => {
+    const notFound = Object.assign(new Error('Unknown Message'), { code: 10008 });
+    mockEditMessage.mockRejectedValueOnce(notFound);
 
     const result = await upsertArchivedSessionNotification(
       'https://discord.com/api/webhooks/123/abc',
@@ -199,6 +200,20 @@ describe('upsertArchivedSessionNotification', () => {
     expect(mockEditMessage).toHaveBeenCalledTimes(1);
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect(result).toBe('new-msg-id');
+  });
+
+  it('keeps the existing message id on a transient edit failure instead of posting a duplicate', async () => {
+    mockEditMessage.mockRejectedValueOnce(new Error('rate limited'));
+
+    const result = await upsertArchivedSessionNotification(
+      'https://discord.com/api/webhooks/123/abc',
+      'Player',
+      makeEntry(),
+      'stale-msg-id',
+    );
+    expect(mockEditMessage).toHaveBeenCalledTimes(1);
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(result).toBe('stale-msg-id');
   });
 
   it('resolves undefined if the send ultimately fails', async () => {

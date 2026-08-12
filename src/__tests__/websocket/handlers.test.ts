@@ -160,6 +160,25 @@ describe('WebSocket session lifecycle', () => {
     expect(archived).not.toBeNull();
   });
 
+  it('does not archive or notify Discord for a session shorter than the 10-minute minimum', async () => {
+    const { upsertArchivedSessionNotification } = jest.requireMock('../../services/discordWebhook');
+    upsertArchivedSessionNotification.mockClear();
+
+    const ws = await authenticatePlayer('QuickHop', 'tok-quick');
+    const now = Date.now();
+    const sessionData = makeSessionData({
+      playerName: 'QuickHop',
+      startTime: new Date(now - 5 * 60_000).toISOString(),
+      logoutTime: new Date(now).toISOString(),
+    });
+    await handleMessage(ws, JSON.stringify({ type: 'SESSION_START', sessionData }));
+    await handleMessage(ws, JSON.stringify({ type: 'SESSION_END', sessionData }));
+
+    const archived = await ArchivedSession.findOne({ username: 'QuickHop' });
+    expect(archived).toBeNull();
+    expect(upsertArchivedSessionNotification).not.toHaveBeenCalled();
+  });
+
   it('resumes a session on the same connection after SESSION_END without re-AUTH', async () => {
     const ws = await authenticatePlayer('SplashKing', 'tok-1');
     const sessionData = makeSessionData({ playerName: 'SplashKing' });
