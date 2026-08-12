@@ -1,4 +1,4 @@
-import { WebhookClient, EmbedBuilder } from 'discord.js';
+import { WebhookClient, EmbedBuilder, type APIEmbed } from 'discord.js';
 import { SplashEntry } from '../types';
 
 const DISCORD_EMBED_LIMIT = 10;
@@ -84,6 +84,32 @@ function getWebhookClient(url: string): WebhookClient {
     webhookClients.set(url, client);
   }
   return client;
+}
+
+/** Matches the `WebhookBody` shape the RuneLite Discord-Chat-Logger plugin posts: plain
+ *  `content` plus (optionally) a single image embed. See services/chatRelay.ts. */
+export interface RawChatWebhookPayload {
+  content: string;
+  embeds?: Array<{ image?: { url?: string } }>;
+}
+
+/**
+ * Forwards a chat-relay message on to a community's real Discord webhook, unmodified — this is
+ * what keeps "post my chat to my own Discord channel" working exactly as it did when the plugin
+ * posted directly, now that it posts to our relay instead. Uses the same client cache and
+ * ordered queue as the rest of this module so it stays rate-limit-friendly alongside any other
+ * webhook traffic to the same URL.
+ */
+export function forwardChatWebhookPayload(webhookUrl: string, payload: RawChatWebhookPayload): void {
+  if (!webhookUrl || !payload.content) return;
+  enqueue(async () => {
+    const client = getWebhookClient(webhookUrl);
+    try {
+      await client.send({ content: payload.content, embeds: payload.embeds as APIEmbed[] | undefined });
+    } catch (err) {
+      console.error('Discord chat-relay forward error:', (err as Error).message);
+    }
+  });
 }
 
 export function enqueueWebhookNotification(

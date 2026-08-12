@@ -47,6 +47,11 @@ export function createInitialState(username: string, ws: WebSocket, userId = '')
   };
 }
 
+/** Removes every in-memory active session. Dev-only reset helper. */
+export function clear(): void {
+  sessions.clear();
+}
+
 /** Removes all sessions whose WebSocket matches the given instance. */
 export function removeBySocket(ws: WebSocket): string | undefined {
   for (const [username, state] of sessions.entries()) {
