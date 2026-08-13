@@ -109,7 +109,8 @@ export interface WsAckResponse {
 
 /** A real OSRS item id + quantity, resolved server-side via services/itemLogResolver.ts — never
  *  derived from a client-local `<img=N>` chat tag (a per-viewer-session sprite index with no
- *  relation to the real item id). `quantity` is always 1 for a pet (never stackable). */
+ *  relation to the real item id). Whether `quantity` is meaningful to actually display is
+ *  ChatBroadcastMessage.showQuantities' job, not a property of any individual item. */
 export interface ChatItemRef {
   id: number;
   quantity: number;
@@ -129,13 +130,20 @@ export interface ChatBroadcastMessage {
   rank?: number;
   rankName?: string;
   rankIconUrl?: string;
-  /** Present when `message` is a `!log <page>`/`!log missing <page>`/`!pets` command — the real
-   *  items that command's output actually describes, resolved server-side via
-   *  services/itemLogResolver.ts. `message` itself stays the literal typed command text; this is
-   *  additive enrichment, not a replacement, so a viewer that doesn't understand it can still
-   *  show the plain line. Absent for every other message, and for one of these commands if
-   *  resolution failed (unlinked account, unknown page, upstream API error/timeout). */
+  /** Present when this line was originally a `!log <page>`/`!log missing <page>`/`!pets` command
+   *  that resolved successfully — the real items it describes, resolved server-side via
+   *  services/itemLogResolver.ts. When present, `message` has *already* been replaced with a
+   *  clean summary built from the same resolution (e.g. "Cyclopes (8/8):"), in place of the raw
+   *  typed command or the plugin's own `<img=N>`-laden local rewrite — so a viewer that doesn't
+   *  render `items` at all still shows a sensible line, just without the icons. Absent for every
+   *  other message, and for one of these commands if resolution failed (unlinked account, unknown
+   *  page, upstream API error/timeout) — `message` is left as the original text in that case. */
   items?: ChatItemRef[];
+  /** Whether a per-item `quantity` in `items` is meaningful to show (e.g. as "xN" next to its
+   *  icon) — true for a resolved collection-log page, false for resolved pets (RuneProfile still
+   *  reports a numeric quantity for those, but owning a pet isn't a "count"). Meaningless/absent
+   *  when `items` itself is absent. */
+  showQuantities?: boolean;
   /** The plugin's own (id, timestamp, type) for this line — present whenever the relay could
    *  extract them, and used solely to correlate a later `edited: true` resend with this message
    *  (see websocket/chatBroadcast.ts). Not a stable/global identifier on its own: `sourceId`

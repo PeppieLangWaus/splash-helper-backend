@@ -74,16 +74,17 @@ export function unsubscribeChat(ws: WebSocket): void {
  *  `rank` is optional so existing (pre-rank) callers keep working unchanged.
  *
  *  When `source.edited` is true, this is a follow-up resend of a message already broadcast once
- *  (same source id/timestamp/type) with `message` updated to a since-resolved chat command's
- *  output — the matching buffered entry is updated in place and re-sent as CHAT_MESSAGE_EDITED
- *  rather than appended as a new line. If no match is found (the original never arrived, or this
- *  service restarted in between), it's inserted as a normal new message instead. Note that only
- *  `message`/`edited` are overwritten on that in-place update — `items` (see below) deliberately
- *  isn't touched, so a `!log`/`!pets` line's already-resolved items survive even if the plugin
- *  later sends its own unrelated edited resend of the same line for some other reason.
+ *  (same source id/timestamp/type) — the matching buffered entry is updated in place and re-sent
+ *  as CHAT_MESSAGE_EDITED rather than appended as a new line. If no match is found (the original
+ *  never arrived, or this service restarted in between), it's inserted as a normal new message
+ *  instead. If the buffered entry was already resolved (`items` set) and *this* update carries no
+ *  new `items` of its own, the update is only applied to `edited` — `message`/`items` are left
+ *  as-is, so a `!log`/`!pets` line's clean summary + items survive even if the plugin later sends
+ *  its own unrelated generic edited-resend for the same line (at best, RuneProfile's own local
+ *  `<img=N>`-laden rewrite — strictly worse to show than what's already resolved here).
  *
- *  `items` is the real item data resolved for a `!log`/`!pets` line (services/itemLogResolver.ts)
- *  — omitted for every other message. */
+ *  `items`/`showQuantities` are the real item data resolved for a `!log`/`!pets` line (services/
+ *  itemLogResolver.ts) — both omitted for every other message. */
 export function broadcastChatMessage(
   communityId: string,
   channelType: ChatChannelType,
@@ -92,6 +93,7 @@ export function broadcastChatMessage(
   rank?: RankInfo,
   source?: ChatMessageSource,
   items?: ChatItemRef[],
+  showQuantities?: boolean,
 ): void {
   const key = bufferKey(communityId, channelType);
   const buffered = recentMessages.get(key) ?? [];
@@ -99,7 +101,16 @@ export function broadcastChatMessage(
   if (source?.edited) {
     const index = findBufferedIndex(buffered, source);
     if (index !== -1) {
-      const updated: ChatBroadcastMessage = { ...buffered[index], message, edited: true };
+      const existing = buffered[index];
+      const alreadyResolvedNothingNew = existing.items !== undefined && items === undefined;
+      const updated: ChatBroadcastMessage = alreadyResolvedNothingNew
+        ? { ...existing, edited: true }
+        : {
+          ...existing,
+          message,
+          edited: true,
+          ...(items !== undefined ? { items, showQuantities } : {}),
+        };
       buffered[index] = updated;
       recentMessages.set(key, buffered);
 
@@ -125,7 +136,7 @@ export function broadcastChatMessage(
     // Note this keeps `items: []` (a successfully resolved page with zero obtained items) rather
     // than dropping it — that's meaningfully different from `items` being absent entirely
     // (message never matched a command, or resolution failed).
-    ...(items !== undefined ? { items } : {}),
+    ...(items !== undefined ? { items, showQuantities } : {}),
   };
 
   buffered.push(payload);

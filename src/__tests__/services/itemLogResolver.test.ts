@@ -23,39 +23,97 @@ beforeEach(() => {
   fetchMock.mockReset();
   process.env.RUNEPROFILE_RATE_LIMIT_MAX = '2';
   process.env.RUNEPROFILE_RATE_LIMIT_WINDOW_MS = '100000';
-  process.env.RUNELITE_RATE_LIMIT_MAX = '2';
-  process.env.RUNELITE_RATE_LIMIT_WINDOW_MS = '100000';
   delete process.env.RUNEPROFILE_API_TOKEN;
 });
 
 const logPage = { kind: 'collection-log' as const, page: 'cyclopes', missingOnly: false };
+const clogBody = { name: 'Cyclopes', items: [{ id: 8844, quantity: 1 }, { id: 8845, quantity: 0 }] };
+
+describe('resolveItemLogCommand — collection log', () => {
+  it('includes every item on the page (obtained and not), with a clean summary', async () => {
+    const { resolveItemLogCommand } = loadModule();
+    fetchMock.mockResolvedValue(jsonResponse(200, clogBody));
+
+    const result = await resolveItemLogCommand('Zezima', logPage);
+    expect(result).toEqual({
+      summary: 'Cyclopes (1/2):',
+      items: [{ id: 8844, quantity: 1 }, { id: 8845, quantity: 0 }],
+      showQuantities: true,
+    });
+  });
+
+  it('"missing" view keeps only the not-yet-obtained items', async () => {
+    const { resolveItemLogCommand } = loadModule();
+    fetchMock.mockResolvedValue(jsonResponse(200, clogBody));
+
+    const result = await resolveItemLogCommand('Zezima', { ...logPage, missingOnly: true });
+    expect(result).toEqual({
+      summary: 'Cyclopes - missing (1/2):',
+      items: [{ id: 8845, quantity: 0 }],
+      showQuantities: true,
+    });
+  });
+
+  it('returns null on a failed lookup (e.g. unlinked account)', async () => {
+    const { resolveItemLogCommand } = loadModule();
+    fetchMock.mockResolvedValue(jsonResponse(404, { code: 'AccountNotFound' }));
+
+    expect(await resolveItemLogCommand('Zezima', logPage)).toBeNull();
+  });
+});
+
+describe('resolveItemLogCommand — pets', () => {
+  it('resolves via the RuneProfile collection-log "pets" page, obtained pets only, never showing quantities', async () => {
+    const { resolveItemLogCommand } = loadModule();
+    fetchMock.mockResolvedValue(jsonResponse(200, {
+      name: 'All Pets',
+      items: [{ id: 12898, quantity: 1 }, { id: 13247, quantity: 0 }],
+    }));
+
+    const result = await resolveItemLogCommand('Zezima', { kind: 'pets' });
+    expect(result).toEqual({
+      summary: 'Pets (1):',
+      items: [{ id: 12898, quantity: 1 }],
+      showQuantities: false,
+    });
+    expect(fetchMock.mock.calls[0][0]).toContain('/collection-log/pets');
+  });
+});
+
+describe('resolveItemLogCommand — sender name handling', () => {
+  it('strips a leading <img=N> status tag and normalizes non-breaking spaces before the API call', async () => {
+    const { resolveItemLogCommand } = loadModule();
+    fetchMock.mockResolvedValue(jsonResponse(200, clogBody));
+
+    const nbsp = String.fromCharCode(0x00a0);
+    await resolveItemLogCommand(`<img=2>Some${nbsp}Name`, logPage);
+    expect(fetchMock.mock.calls[0][0]).toContain('/profiles/Some%20Name/');
+  });
+});
 
 describe('resolveItemLogCommand — outbound rate limiting', () => {
   it('allows requests up to the configured max, then skips without calling fetch', async () => {
     const { resolveItemLogCommand } = loadModule();
-    fetchMock.mockResolvedValue(jsonResponse(200, { name: 'Cyclopes', items: [{ id: 8844, quantity: 1 }] }));
+    fetchMock.mockResolvedValue(jsonResponse(200, clogBody));
 
-    const first = await resolveItemLogCommand('Zezima', logPage);
-    const second = await resolveItemLogCommand('Zezima', logPage);
+    await resolveItemLogCommand('Zezima', logPage);
+    await resolveItemLogCommand('Zezima', logPage);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(first).toEqual([{ id: 8844, quantity: 1 }]);
-    expect(second).toEqual([{ id: 8844, quantity: 1 }]);
 
     const third = await resolveItemLogCommand('Zezima', logPage);
     expect(fetchMock).toHaveBeenCalledTimes(2); // no new call made — skipped by the self-throttle
     expect(third).toBeNull();
   });
 
-  it('tracks the RuneProfile and RuneLite limits independently', async () => {
+  it('shares one limiter across !log and !pets, since both hit RuneProfile', async () => {
     const { resolveItemLogCommand } = loadModule();
-    fetchMock.mockResolvedValue(jsonResponse(200, { name: 'Cyclopes', items: [] }));
+    fetchMock.mockResolvedValue(jsonResponse(200, clogBody));
     await resolveItemLogCommand('Zezima', logPage);
-    await resolveItemLogCommand('Zezima', logPage); // RuneProfile limiter now exhausted (max 2)
+    await resolveItemLogCommand('Zezima', logPage); // limiter now exhausted (max 2)
 
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, [12898]));
     const pets = await resolveItemLogCommand('Zezima', { kind: 'pets' });
-    expect(pets).toEqual([{ id: 12898, quantity: 1 }]);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(pets).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('backs off after an upstream 429, honoring Retry-After, independent of remaining window budget', async () => {
@@ -68,7 +126,7 @@ describe('resolveItemLogCommand — outbound rate limiting', () => {
 
     // Still within the 60s 429 backoff, and well within the sliding window's own remaining
     // budget (max 2, only 1 used) — this second call is skipped by the backoff specifically.
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, { name: 'Cyclopes', items: [] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, clogBody));
     const second = await resolveItemLogCommand('Zezima', logPage);
     expect(second).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -79,7 +137,7 @@ describe('resolveItemLogCommand — outbound rate limiting', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(429, {}));
 
     await resolveItemLogCommand('Zezima', logPage);
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, { name: 'Cyclopes', items: [] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, clogBody));
     const second = await resolveItemLogCommand('Zezima', logPage);
     expect(second).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -87,22 +145,22 @@ describe('resolveItemLogCommand — outbound rate limiting', () => {
 });
 
 describe('resolveItemLogCommand — API token', () => {
-  it('sends an Authorization header for RuneProfile once configured, never for RuneLite', async () => {
+  it('sends an Authorization header once configured, for both !log and !pets (both hit RuneProfile)', async () => {
     process.env.RUNEPROFILE_API_TOKEN = 'test-token';
     const { resolveItemLogCommand } = loadModule();
-    fetchMock.mockResolvedValue(jsonResponse(200, { name: 'Cyclopes', items: [] }));
+    fetchMock.mockResolvedValue(jsonResponse(200, clogBody));
 
     await resolveItemLogCommand('Zezima', logPage);
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-token');
 
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, []));
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { name: 'All Pets', items: [] }));
     await resolveItemLogCommand('Zezima', { kind: 'pets' });
-    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBeUndefined();
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer test-token');
   });
 
   it('omits the Authorization header entirely when no token is configured', async () => {
     const { resolveItemLogCommand } = loadModule();
-    fetchMock.mockResolvedValue(jsonResponse(200, { name: 'Cyclopes', items: [] }));
+    fetchMock.mockResolvedValue(jsonResponse(200, clogBody));
 
     await resolveItemLogCommand('Zezima', logPage);
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();

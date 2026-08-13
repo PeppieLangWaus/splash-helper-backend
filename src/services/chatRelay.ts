@@ -103,11 +103,13 @@ export function parseChatRelayMessage(raw: unknown): ParsedChatMessage | null {
   if (!r.user || typeof r.user !== 'object') return null;
   const u = r.user as Record<string, unknown>;
   if (typeof u.name !== 'string' || !u.name.trim() || u.name.length > MAX_NAME_LENGTH) return null;
-  // OSRS display names use U+00A0 (non-breaking space) between first/last name — normalized here
-  // (not just relied on the plugin to have done it) so a two-word RSN matches correctly wherever
-  // `sender` is later used as a real username, e.g. resolveItemLogCommand's RuneProfile/RuneLite
-  // API calls, which would otherwise silently 404 against the account's real, normally-spaced name.
-  const sender = u.name.trim().replace(/\u00A0/g, ' ');
+  // Left exactly as the plugin sends it - including any leading `<img=N>` mod/ironman-status tag
+  // and, for a two-word RSN, an embedded U+00A0 (non-breaking space) - since the frontend parses
+  // that tag for the status icon (chatIcons.ts's parsePlayerName) and a NBSP renders identically
+  // to a normal space in HTML either way. Where a *clean* username is actually needed (resolving
+  // !log/!pets against RuneProfile's/RuneLite's own API - services/itemLogResolver.ts), that
+  // sanitization happens there instead, scoped to just that lookup rather than this display field.
+  const sender = u.name.trim();
 
   // The chat name lives in whichever of friendsChat/clanChat matches this message's own declared
   // type — not just "whichever is present", so a message can't smuggle itself in under the wrong
@@ -315,23 +317,32 @@ export async function handleChatRelayPayload(rawMessage: unknown, sourceIp: stri
     });
   }
 
-  // `!log <page>`/`!log missing <page>`/`!pets` get their real item data resolved here, from the
-  // actual public API each command is backed by (services/itemLogResolver.ts) — not from any
-  // `<img=N>` tag the message text might contain, which is a client-local, per-viewer-session
-  // sprite index with no relation to the real item id. This does add a bounded network round trip
-  // before responding to the relay POST, but only for a message that matches one of these two
-  // commands; every other chat line is entirely unaffected.
+  // `!log <page>`/`!log missing <page>`/`!pets` get their real item data resolved here, from
+  // RuneProfile's own API (services/itemLogResolver.ts) — not from any `<img=N>` tag the message
+  // text might contain, which is a client-local, per-viewer-session sprite index with no relation
+  // to the real item id. This does add a bounded network round trip before responding to the
+  // relay POST, but only for a message that matches one of these two commands; every other chat
+  // line is entirely unaffected. On success, the broadcast `message` becomes the resolution's own
+  // clean summary (e.g. "Cyclopes (8/8):") in place of the raw command/plugin-rewritten text —
+  // `forwardChatWebhookPayload` above already ran with the original text, unaffected by this.
   const itemLogCommand = detectItemLogCommand(parsed.message);
-  const items = itemLogCommand
-    ? (await resolveItemLogCommand(parsed.sender, itemLogCommand)) ?? undefined
-    : undefined;
+  const resolution = itemLogCommand ? await resolveItemLogCommand(parsed.sender, itemLogCommand) : null;
 
-  broadcastChatMessage(binding.communityId, binding.channelType, parsed.sender, parsed.message, parsed.rankInfo ?? undefined, {
-    id: parsed.sourceId,
-    timestamp: parsed.sourceTimestamp,
-    type: parsed.sourceType,
-    edited: parsed.edited,
-  }, items);
+  broadcastChatMessage(
+    binding.communityId,
+    binding.channelType,
+    parsed.sender,
+    resolution ? resolution.summary : parsed.message,
+    parsed.rankInfo ?? undefined,
+    {
+      id: parsed.sourceId,
+      timestamp: parsed.sourceTimestamp,
+      type: parsed.sourceType,
+      edited: parsed.edited,
+    },
+    resolution?.items,
+    resolution?.showQuantities,
+  );
 
   log(`Chat relay: ${binding.channelType} message for community ${binding.communityId} from ${parsed.sender}`);
   return { status: 'forwarded', communityId: binding.communityId, channelType: binding.channelType };
