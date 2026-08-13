@@ -32,6 +32,11 @@ export interface RawChatRelayMessage {
     timestamp: number;
     type: string;
     text: string;
+    /** True for a follow-up resend of a message already sent once — same `id`/`timestamp`/`type`
+     *  as the original, but `text` updated to a since-resolved chat command's output. Arrives
+     *  within ~8s of the original, or (for most messages) not at all. Absent/false for the
+     *  original send itself. */
+    edited?: boolean;
   };
   user: {
     name: string;
@@ -52,6 +57,16 @@ export interface ParsedChatMessage {
   sender: string;
   message: string;
   rankInfo: RankInfo | null;
+  /** The plugin's own per-session identifiers for this line — meaningful only for correlating an
+   *  `edited` resend with the original it updates (see chatBroadcast.ts), never for display.
+   *  `sourceId` alone is not globally unique (it's a small per-session counter from the game
+   *  client), so always look up by all three together. */
+  sourceId: number;
+  sourceTimestamp: number;
+  sourceType: string;
+  /** True when this is a follow-up resend of a message already sent once, with `message` updated
+   *  to a since-resolved chat command's output. */
+  edited: boolean;
 }
 
 function parseClanRankInfo(raw: unknown): RankInfo | null {
@@ -78,6 +93,12 @@ export function parseChatRelayMessage(raw: unknown): ParsedChatMessage | null {
   const message = m.text.trim();
   if (!message || message.length > MAX_CONTENT_LENGTH) return null;
 
+  if (typeof m.id !== 'number' || !Number.isFinite(m.id)) return null;
+  if (typeof m.timestamp !== 'number' || !Number.isFinite(m.timestamp)) return null;
+  // Anything other than the literal `true` is treated as "not an edited resend" — absent, false,
+  // or a malformed value all mean the same thing here.
+  const edited = m.edited === true;
+
   if (!r.user || typeof r.user !== 'object') return null;
   const u = r.user as Record<string, unknown>;
   if (typeof u.name !== 'string' || !u.name.trim() || u.name.length > MAX_NAME_LENGTH) return null;
@@ -96,7 +117,17 @@ export function parseChatRelayMessage(raw: unknown): ParsedChatMessage | null {
     ? getFriendsChatRankInfo(typeof u.friendsChatRank === 'string' ? u.friendsChatRank : undefined)
     : parseClanRankInfo(u.clanRank);
 
-  return { channelType, chatName, sender, message, rankInfo };
+  return {
+    channelType,
+    chatName,
+    sender,
+    message,
+    rankInfo,
+    sourceId: m.id,
+    sourceTimestamp: m.timestamp,
+    sourceType: m.type as string,
+    edited,
+  };
 }
 
 // ── Chat-name → community classification ────────────────────────────────────
@@ -279,7 +310,12 @@ export async function handleChatRelayPayload(rawMessage: unknown, sourceIp: stri
     });
   }
 
-  broadcastChatMessage(binding.communityId, binding.channelType, parsed.sender, parsed.message, parsed.rankInfo ?? undefined);
+  broadcastChatMessage(binding.communityId, binding.channelType, parsed.sender, parsed.message, parsed.rankInfo ?? undefined, {
+    id: parsed.sourceId,
+    timestamp: parsed.sourceTimestamp,
+    type: parsed.sourceType,
+    edited: parsed.edited,
+  });
 
   log(`Chat relay: ${binding.channelType} message for community ${binding.communityId} from ${parsed.sender}`);
   return { status: 'forwarded', communityId: binding.communityId, channelType: binding.channelType };

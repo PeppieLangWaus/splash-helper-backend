@@ -121,6 +121,16 @@ export interface ChatBroadcastMessage {
   rank?: number;
   rankName?: string;
   rankIconUrl?: string;
+  /** The plugin's own (id, timestamp, type) for this line — present whenever the relay could
+   *  extract them, and used solely to correlate a later `edited: true` resend with this message
+   *  (see websocket/chatBroadcast.ts). Not a stable/global identifier on its own: `sourceId`
+   *  alone is a small per-session counter from the game client, not unique across senders. */
+  sourceId?: number;
+  sourceTimestamp?: number;
+  sourceType?: string;
+  /** True once this message has been updated in place by an edited resend of a chat command that
+   *  resolved after it was first sent. */
+  edited?: boolean;
 }
 
 /** Acks a SUBSCRIBE_CHAT and backfills recent history (see chatBroadcast's ring buffer) so the
@@ -136,12 +146,20 @@ export interface WsChatMessageResponse extends ChatBroadcastMessage {
   type: 'CHAT_MESSAGE';
 }
 
+/** Sent instead of a second WsChatMessageResponse when an edited resend (see ChatBroadcastMessage
+ *  .edited) was correlated with a message already broadcast — same shape, so a viewer can update
+ *  the matching `id` in place rather than appending a duplicate line. */
+export interface WsChatMessageEditedResponse extends ChatBroadcastMessage {
+  type: 'CHAT_MESSAGE_EDITED';
+}
+
 export type WsOutgoingMessage =
   | WsAuthSuccessResponse
   | WsAuthFailureResponse
   | WsAckResponse
   | WsChatSubscribedResponse
-  | WsChatMessageResponse;
+  | WsChatMessageResponse
+  | WsChatMessageEditedResponse;
 
 // ── Active session state (in-memory) ────────────────────────────────────────
 
