@@ -141,6 +141,7 @@ vite.config.ts.timestamp-*
 test-data
 db.json
 .devdata/
+data/
 
 # Gradle build/work output for scripts/item-icons (npm run render-item-icons) — the rendered
 # data/item-icons/*.png it produces is committed, this scratch output isn't.
