@@ -103,7 +103,11 @@ export function parseChatRelayMessage(raw: unknown): ParsedChatMessage | null {
   if (!r.user || typeof r.user !== 'object') return null;
   const u = r.user as Record<string, unknown>;
   if (typeof u.name !== 'string' || !u.name.trim() || u.name.length > MAX_NAME_LENGTH) return null;
-  const sender = u.name.trim();
+  // OSRS display names use U+00A0 (non-breaking space) between first/last name — normalized here
+  // (not just relied on the plugin to have done it) so a two-word RSN matches correctly wherever
+  // `sender` is later used as a real username, e.g. resolveItemLogCommand's RuneProfile/RuneLite
+  // API calls, which would otherwise silently 404 against the account's real, normally-spaced name.
+  const sender = u.name.trim().replace(/\u00A0/g, ' ');
 
   // The chat name lives in whichever of friendsChat/clanChat matches this message's own declared
   // type — not just "whichever is present", so a message can't smuggle itself in under the wrong
