@@ -4,6 +4,7 @@ import { ChatChannelType } from '../models/ChatChannelName';
 import { RankInfo } from '../services/rankIcons';
 import {
   ChatBroadcastMessage,
+  ChatItemRef,
   WsChatMessageEditedResponse,
   WsChatMessageResponse,
   WsChatSubscribedResponse,
@@ -76,7 +77,13 @@ export function unsubscribeChat(ws: WebSocket): void {
  *  (same source id/timestamp/type) with `message` updated to a since-resolved chat command's
  *  output — the matching buffered entry is updated in place and re-sent as CHAT_MESSAGE_EDITED
  *  rather than appended as a new line. If no match is found (the original never arrived, or this
- *  service restarted in between), it's inserted as a normal new message instead. */
+ *  service restarted in between), it's inserted as a normal new message instead. Note that only
+ *  `message`/`edited` are overwritten on that in-place update — `items` (see below) deliberately
+ *  isn't touched, so a `!log`/`!pets` line's already-resolved items survive even if the plugin
+ *  later sends its own unrelated edited resend of the same line for some other reason.
+ *
+ *  `items` is the real item data resolved for a `!log`/`!pets` line (services/itemLogResolver.ts)
+ *  — omitted for every other message. */
 export function broadcastChatMessage(
   communityId: string,
   channelType: ChatChannelType,
@@ -84,6 +91,7 @@ export function broadcastChatMessage(
   message: string,
   rank?: RankInfo,
   source?: ChatMessageSource,
+  items?: ChatItemRef[],
 ): void {
   const key = bufferKey(communityId, channelType);
   const buffered = recentMessages.get(key) ?? [];
@@ -114,6 +122,10 @@ export function broadcastChatMessage(
     timestamp: Date.now(),
     ...(rank ? { rank: rank.rank, rankName: rank.name, rankIconUrl: rank.iconUrl } : {}),
     ...(source ? { sourceId: source.id, sourceTimestamp: source.timestamp, sourceType: source.type, edited: source.edited } : {}),
+    // Note this keeps `items: []` (a successfully resolved page with zero obtained items) rather
+    // than dropping it — that's meaningfully different from `items` being absent entirely
+    // (message never matched a command, or resolution failed).
+    ...(items !== undefined ? { items } : {}),
   };
 
   buffered.push(payload);

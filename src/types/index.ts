@@ -107,6 +107,14 @@ export interface WsAckResponse {
   type: 'ACK';
 }
 
+/** A real OSRS item id + quantity, resolved server-side via services/itemLogResolver.ts — never
+ *  derived from a client-local `<img=N>` chat tag (a per-viewer-session sprite index with no
+ *  relation to the real item id). `quantity` is always 1 for a pet (never stackable). */
+export interface ChatItemRef {
+  id: number;
+  quantity: number;
+}
+
 /** One chat-relay message, broadcast to every socket subscribed to this community+channel. */
 export interface ChatBroadcastMessage {
   id: string;
@@ -121,6 +129,13 @@ export interface ChatBroadcastMessage {
   rank?: number;
   rankName?: string;
   rankIconUrl?: string;
+  /** Present when `message` is a `!log <page>`/`!log missing <page>`/`!pets` command — the real
+   *  items that command's output actually describes, resolved server-side via
+   *  services/itemLogResolver.ts. `message` itself stays the literal typed command text; this is
+   *  additive enrichment, not a replacement, so a viewer that doesn't understand it can still
+   *  show the plain line. Absent for every other message, and for one of these commands if
+   *  resolution failed (unlinked account, unknown page, upstream API error/timeout). */
+  items?: ChatItemRef[];
   /** The plugin's own (id, timestamp, type) for this line — present whenever the relay could
    *  extract them, and used solely to correlate a later `edited: true` resend with this message
    *  (see websocket/chatBroadcast.ts). Not a stable/global identifier on its own: `sourceId`

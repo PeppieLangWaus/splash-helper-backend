@@ -3,6 +3,7 @@ import { Community, ICommunity } from '../models/Community';
 import { ChatChannelName, ChatChannelType, normalizeChatChannelName } from '../models/ChatChannelName';
 import { forwardChatWebhookPayload } from './discordWebhook';
 import { RankInfo, getFriendsChatRankInfo, getClanRankIconUrl } from './rankIcons';
+import { detectItemLogCommand, resolveItemLogCommand } from './itemLogResolver';
 import { broadcastChatMessage } from '../websocket/chatBroadcast';
 import { log, logWarn } from '../utils/logger';
 
@@ -310,12 +311,23 @@ export async function handleChatRelayPayload(rawMessage: unknown, sourceIp: stri
     });
   }
 
+  // `!log <page>`/`!log missing <page>`/`!pets` get their real item data resolved here, from the
+  // actual public API each command is backed by (services/itemLogResolver.ts) — not from any
+  // `<img=N>` tag the message text might contain, which is a client-local, per-viewer-session
+  // sprite index with no relation to the real item id. This does add a bounded network round trip
+  // before responding to the relay POST, but only for a message that matches one of these two
+  // commands; every other chat line is entirely unaffected.
+  const itemLogCommand = detectItemLogCommand(parsed.message);
+  const items = itemLogCommand
+    ? (await resolveItemLogCommand(parsed.sender, itemLogCommand)) ?? undefined
+    : undefined;
+
   broadcastChatMessage(binding.communityId, binding.channelType, parsed.sender, parsed.message, parsed.rankInfo ?? undefined, {
     id: parsed.sourceId,
     timestamp: parsed.sourceTimestamp,
     type: parsed.sourceType,
     edited: parsed.edited,
-  });
+  }, items);
 
   log(`Chat relay: ${binding.channelType} message for community ${binding.communityId} from ${parsed.sender}`);
   return { status: 'forwarded', communityId: binding.communityId, channelType: binding.channelType };
