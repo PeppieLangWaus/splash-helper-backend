@@ -3,6 +3,7 @@ import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, rm
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import extractZip from 'extract-zip';
 
 /**
  * Renders an icon PNG for every named OSRS item and copies them into data/item-icons/, for
@@ -19,7 +20,7 @@ import { pipeline } from 'node:stream/promises';
  *   npm run render-item-icons -- --cache-dir <path>     # skip download, render from an existing disk store
  *   npm run render-item-icons -- --ids 995,4151         # only these item IDs (fast smoke test)
  *
- * Requires a JDK (11+, on PATH or via JAVA_HOME) and the `unzip` CLI.
+ * Requires a JDK (11+, on PATH or via JAVA_HOME).
  */
 
 const OPENRS2_CACHES_URL = 'https://archive.openrs2.org/caches.json';
@@ -82,7 +83,7 @@ async function downloadCache(cache: Openrs2Cache, destDir: string): Promise<stri
   }
   await pipeline(Readable.fromWeb(download.body as never), createWriteStream(zipPath));
 
-  execFileSync('unzip', ['-o', '-q', zipPath, '-d', destDir]);
+  await extractZip(zipPath, { dir: destDir });
   const cacheDir = path.join(destDir, 'cache');
   if (!existsSync(path.join(cacheDir, 'main_file_cache.dat2'))) {
     throw new Error(`Extracted cache not found at ${cacheDir}`);
