@@ -13,6 +13,7 @@ import communitiesRouter from './routes/communities';
 import communityBotRouter from './routes/communityBot';
 import chatRelayRouter from './routes/chatRelay';
 import chatChannelsRouter from './routes/chatChannels';
+import itemsRouter from './routes/items';
 import devRouter from './routes/dev';
 import { attachWebSocketServer } from './websocket/server';
 import { sweepInactiveSessions } from './websocket/handlers';
@@ -47,6 +48,7 @@ app.use('/communities', communitiesRouter);
 app.use('/community-bot', communityBotRouter);
 app.use('/chat-relay', chatRelayRouter);
 app.use('/chat-channels', chatChannelsRouter);
+app.use('/items', itemsRouter);
 
 if (process.env.NODE_ENV !== 'production') {
   app.use('/dev', devRouter);
