@@ -9,7 +9,8 @@
     "dev": "ts-node-dev --respawn --transpile-only src/app.ts",
     "dev:local": "ts-node-dev --respawn --transpile-only src/devtools/localServer.ts",
     "test": "jest --forceExit --detectOpenHandles",
-    "test:watch": "jest --watch --forceExit --detectOpenHandles"
+    "test:watch": "jest --watch --forceExit --detectOpenHandles",
+    "render-item-icons": "tsx scripts/render-item-icons.ts"
   },
   "jest": {
     "preset": "ts-jest",
@@ -63,6 +64,7 @@
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.9",
     "ts-node-dev": "^2.0.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.3.2"
   }
 }
