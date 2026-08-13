@@ -14,6 +14,8 @@ import extractZip from 'extract-zip';
  * data/item-icons/*.png files. Trimmed port of RuneProfile's scripts/ts-scripts/sync-item-icons.ts
  * + lib/openrs2.ts — cache download -> Java render -> copy, no R2/CDN upload, diffing, or
  * sprite-atlas compositing (see scripts/item-icons/README.md for what else was dropped and why).
+ * Icons are rendered to match RuneProfile's own (quantity 10000 + its quantities.json overrides,
+ * so stackable items show their full-stack sprite variant) rather than a bare single unit.
  *
  * Usage:
  *   npm run render-item-icons                          # latest live cache from OpenRS2
@@ -95,7 +97,10 @@ async function downloadCache(cache: Openrs2Cache, destDir: string): Promise<stri
 // wrote {itemId}.png files to.
 function renderIcons(cacheDir: string): string {
   const outDir = path.join(WORK_DIR, 'icons');
-  const rendererArgs = idsArg ? `${cacheDir} ${outDir} ${idsArg}` : `${cacheDir} ${outDir}`;
+  const quantitiesPath = path.join(RENDERER_DIR, 'quantities.json');
+  const rendererArgs = idsArg
+    ? `${cacheDir} ${outDir} ${quantitiesPath} ${idsArg}`
+    : `${cacheDir} ${outDir} ${quantitiesPath}`;
   // Gradle's `--args` takes one space-separated string, itself containing multiple app args — on
   // Windows that whole thing has to survive as a single token once `shell: true` (required to exec
   // a .bat at all) naively re-joins our argv with spaces, so it's quoted here ourselves.

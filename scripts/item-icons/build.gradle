@@ -14,6 +14,7 @@ dependencies {
     // RuneLite's own cache-parsing library — the same code the client uses to read item/sprite/
     // texture/model data out of a Jagex disk store, and to rasterize item icons from it.
     implementation group: 'net.runelite', name: 'cache', version: 'latest.release'
+    implementation 'com.google.code.gson:gson:2.10.1'
     implementation 'org.slf4j:slf4j-simple:1.7.36'
 }
 

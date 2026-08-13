@@ -1,12 +1,19 @@
 package com.splashhelper.itemicons;
 
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileReader;
 import java.io.IOException;
+import java.io.Reader;
+import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -28,19 +35,18 @@ import net.runelite.cache.fs.Store;
 import net.runelite.cache.item.ItemSpriteFactory;
 
 /**
- * Renders a single-item inventory icon PNG for every named item in an OSRS cache, headlessly,
- * using the same software rasterizer the RuneLite client uses for item icons
- * (net.runelite.cache.item.ItemSpriteFactory).
+ * Renders an inventory icon PNG for every named item in an OSRS cache, headlessly, using the same
+ * software rasterizer the RuneLite client uses for item icons (net.runelite.cache.item.ItemSpriteFactory).
  *
- * Usage: RenderItemIcons <cacheDir> <outDir> [ids]
+ * Usage: RenderItemIcons <cacheDir> <outDir> [quantitiesJson] [ids]
  *
  * cacheDir is a Jagex disk store (main_file_cache.dat2 + .idx files), e.g. an OpenRS2 disk.zip
- * extracted. ids is an optional comma-separated list of item IDs to render only a subset (for
- * fast local smoke-testing instead of a full ~4000-item render).
- *
- * Icons are rendered at quantity 1 (a plain single-item icon) rather than a full-stack variant —
- * this is meant for a chat-message item lookup, not a bank/collection-log display, so there's no
- * need for stack-count overlays or a quantity-override table.
+ * extracted. Icons are rendered at quantity 10000 so stackable items (coins, runes, ...) show
+ * their full-stack variant sprite (countObj/countCo) rather than a single unit — matching how
+ * RuneProfile's own icons look, since that's the point of comparison here. quantitiesJson
+ * optionally maps item IDs to override quantities for items whose stack variant isn't wanted.
+ * ids is an optional comma-separated list of item IDs to render only a subset (for fast local
+ * smoke-testing instead of a full ~4000-item render).
  *
  * Rendering runs on all cores. The shared managers are safe for concurrent createSprite calls
  * (texture pixel caching is synchronized upstream); the disk store is not, so model archive reads
@@ -50,7 +56,7 @@ import net.runelite.cache.item.ItemSpriteFactory;
  */
 public class RenderItemIcons
 {
-	private static final int QUANTITY = 1;
+	private static final int DEFAULT_QUANTITY = 10000;
 	// Matches the client's item icon rendering.
 	private static final int BORDER = 1;
 	private static final int SHADOW_COLOR = 3153952;
@@ -59,7 +65,7 @@ public class RenderItemIcons
 	{
 		if (args.length < 2)
 		{
-			System.err.println("Usage: RenderItemIcons <cacheDir> <outDir> [ids]");
+			System.err.println("Usage: RenderItemIcons <cacheDir> <outDir> [quantitiesJson] [ids]");
 			System.exit(2);
 		}
 
@@ -70,10 +76,23 @@ public class RenderItemIcons
 			throw new IOException("Failed to create output directory: " + outDir);
 		}
 
-		Set<Integer> onlyIds = new HashSet<>();
+		Map<Integer, Integer> quantities = new HashMap<>();
 		if (args.length >= 3 && !args[2].isEmpty())
 		{
-			for (String id : args[2].split(","))
+			try (Reader reader = new FileReader(args[2]))
+			{
+				Type type = new TypeToken<Map<Integer, Integer>>()
+				{
+				}.getType();
+				quantities = new Gson().fromJson(reader, type);
+			}
+			System.out.println("Loaded " + quantities.size() + " quantity overrides");
+		}
+
+		Set<Integer> onlyIds = new HashSet<>();
+		if (args.length >= 4 && !args[3].isEmpty())
+		{
+			for (String id : args[3].split(","))
 			{
 				onlyIds.add(Integer.parseInt(id.trim()));
 			}
@@ -140,15 +159,17 @@ public class RenderItemIcons
 			ConcurrentLinkedQueue<Integer> failed = new ConcurrentLinkedQueue<>();
 
 			ExecutorService pool = Executors.newFixedThreadPool(threads);
+			Map<Integer, Integer> finalQuantities = quantities;
 			for (ItemDefinition itemDef : named)
 			{
 				pool.submit(() ->
 				{
 					try
 					{
+						int quantity = finalQuantities.getOrDefault(itemDef.id, DEFAULT_QUANTITY);
 						BufferedImage sprite = ItemSpriteFactory.createSprite(
 							itemManager, modelProvider, spriteManager, textureManager,
-							itemDef.id, QUANTITY, BORDER, SHADOW_COLOR, false);
+							itemDef.id, quantity, BORDER, SHADOW_COLOR, false);
 						if (sprite == null)
 						{
 							failed.add(itemDef.id);
