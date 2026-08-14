@@ -90,6 +90,33 @@ describe('parseChatRelayMessage — edited resend fields', () => {
   });
 });
 
+describe('parseChatRelayMessage — clan message type variants', () => {
+  /** Same shape as makeFullModeMessage, but for a `clanChat` container instead of `friendsChat`. */
+  function makeClanMessage(type: string, overrides: Record<string, unknown> = {}): unknown {
+    return {
+      message: { id: 42, timestamp: 1_700_000_000, type, text: 'gz on the drop' },
+      user: { name: 'Zezima', clanRank: { rank: 100, title: 'Owner' } },
+      clanChat: { name: 'Ardy Splash CC' },
+      ...overrides,
+    };
+  }
+
+  // CLAN_CHAT (own clan), CLAN_GUEST_CHAT (viewing another clan as a guest), and CLAN_GIM_CHAT
+  // (Group Ironman clan) are three distinct RuneLite ChatMessageType values for what is, from this
+  // backend's point of view, the same "clan chat" concept — all three must classify as 'cc', or a
+  // message from a guest/GIM clan channel is silently dropped as unparseable (see the matching
+  // comment on MESSAGE_TYPE_TO_CHANNEL_TYPE in chatRelay.ts).
+  it.each(['CLAN_CHAT', 'CLAN_GUEST_CHAT', 'CLAN_GIM_CHAT'])('classifies a %s message as cc', (type) => {
+    const parsed = parseChatRelayMessage(makeClanMessage(type));
+    expect(parsed?.channelType).toBe('cc');
+    expect(parsed?.chatName).toBe('Ardy Splash CC');
+  });
+
+  it('rejects a clan system-message type (not an actual chat line)', () => {
+    expect(parseChatRelayMessage(makeClanMessage('CLAN_MESSAGE'))).toBeNull();
+  });
+});
+
 describe('handleChatRelayPayload — edited resend correlation end to end', () => {
   async function registerCommunity() {
     const community = await Community.create({ name: 'Ardy Hosts', ownerIds: [new Types.ObjectId()], memberUserIds: [] });

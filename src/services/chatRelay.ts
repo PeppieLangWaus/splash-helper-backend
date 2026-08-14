@@ -13,10 +13,20 @@ const MAX_CONTENT_LENGTH = 2000;
 const MAX_NAME_LENGTH = 100;
 
 /** The `message.type` values the plugin sends, mapped to our internal fc/cc distinction. Note the
- *  inconsistent underscore — that's genuinely how the plugin spells them. */
+ *  inconsistent underscore — that's genuinely how the plugin spells them.
+ *
+ *  RuneLite's own ChatMessageType splits an in-game clan chat message three ways depending on
+ *  which of the (new, post-2022) clan system's channels it came from — CLAN_CHAT for the
+ *  player's own clan, CLAN_GUEST_CHAT while viewing another clan as a guest, CLAN_GIM_CHAT for a
+ *  Group Ironman clan — all three are the same "clan chat" concept from this backend's point of
+ *  view, so all map to 'cc'. Missing the latter two used to mean a message from a guest/GIM clan
+ *  channel simply didn't match any key here and got silently dropped as unparseable, which looked
+ *  like "clan chat stopped being recognized" for anyone chatting in one of those. */
 const MESSAGE_TYPE_TO_CHANNEL_TYPE: Record<string, ChatChannelType> = {
   FRIENDSCHAT: 'fc',
   CLAN_CHAT: 'cc',
+  CLAN_GUEST_CHAT: 'cc',
+  CLAN_GIM_CHAT: 'cc',
 };
 
 /**
