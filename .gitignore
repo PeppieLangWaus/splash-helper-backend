@@ -147,4 +147,5 @@ data/
 # data/item-icons/*.png it produces is committed, this scratch output isn't.
 scripts/item-icons/work/
 scripts/item-icons/build/
+scripts/item-icons/bin/
 scripts/item-icons/.gradle/
