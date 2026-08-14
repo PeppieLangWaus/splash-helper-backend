@@ -11,6 +11,15 @@ COPY src ./src
 
 RUN npm run build
 
+# Renders OSRS item icons into data/item-icons/ at build time (scripts/render-item-icons.ts —
+# see scripts/item-icons/README.md) rather than committing ~4000 generated PNGs to the repo.
+# Needs a JDK for the Gradle-based renderer, and downloads a live cache (~180MB) from OpenRS2
+# plus the Gradle distribution and net.runelite:cache's own dependencies on top of that — this
+# stage needs network access and adds a few minutes to every image build.
+RUN apk add --no-cache openjdk17
+COPY scripts ./scripts
+RUN npm run render-item-icons
+
 # ── Stage 2: runtime ───────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
@@ -22,6 +31,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/data ./data
 
 EXPOSE 3000
 

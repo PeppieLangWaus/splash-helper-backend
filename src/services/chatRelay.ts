@@ -3,6 +3,7 @@ import { Community, ICommunity } from '../models/Community';
 import { ChatChannelName, ChatChannelType, normalizeChatChannelName } from '../models/ChatChannelName';
 import { forwardChatWebhookPayload } from './discordWebhook';
 import { RankInfo, getFriendsChatRankInfo, getClanRankIconUrl } from './rankIcons';
+import { detectItemLogCommand, resolveItemLogCommand } from './itemLogResolver';
 import { broadcastChatMessage } from '../websocket/chatBroadcast';
 import { log, logWarn } from '../utils/logger';
 
@@ -12,10 +13,20 @@ const MAX_CONTENT_LENGTH = 2000;
 const MAX_NAME_LENGTH = 100;
 
 /** The `message.type` values the plugin sends, mapped to our internal fc/cc distinction. Note the
- *  inconsistent underscore — that's genuinely how the plugin spells them. */
+ *  inconsistent underscore — that's genuinely how the plugin spells them.
+ *
+ *  RuneLite's own ChatMessageType splits an in-game clan chat message three ways depending on
+ *  which of the (new, post-2022) clan system's channels it came from — CLAN_CHAT for the
+ *  player's own clan, CLAN_GUEST_CHAT while viewing another clan as a guest, CLAN_GIM_CHAT for a
+ *  Group Ironman clan — all three are the same "clan chat" concept from this backend's point of
+ *  view, so all map to 'cc'. Missing the latter two used to mean a message from a guest/GIM clan
+ *  channel simply didn't match any key here and got silently dropped as unparseable, which looked
+ *  like "clan chat stopped being recognized" for anyone chatting in one of those. */
 const MESSAGE_TYPE_TO_CHANNEL_TYPE: Record<string, ChatChannelType> = {
   FRIENDSCHAT: 'fc',
   CLAN_CHAT: 'cc',
+  CLAN_GUEST_CHAT: 'cc',
+  CLAN_GIM_CHAT: 'cc',
 };
 
 /**
@@ -32,6 +43,11 @@ export interface RawChatRelayMessage {
     timestamp: number;
     type: string;
     text: string;
+    /** True for a follow-up resend of a message already sent once — same `id`/`timestamp`/`type`
+     *  as the original, but `text` updated to a since-resolved chat command's output. Arrives
+     *  within ~8s of the original, or (for most messages) not at all. Absent/false for the
+     *  original send itself. */
+    edited?: boolean;
   };
   user: {
     name: string;
@@ -52,6 +68,16 @@ export interface ParsedChatMessage {
   sender: string;
   message: string;
   rankInfo: RankInfo | null;
+  /** The plugin's own per-session identifiers for this line — meaningful only for correlating an
+   *  `edited` resend with the original it updates (see chatBroadcast.ts), never for display.
+   *  `sourceId` alone is not globally unique (it's a small per-session counter from the game
+   *  client), so always look up by all three together. */
+  sourceId: number;
+  sourceTimestamp: number;
+  sourceType: string;
+  /** True when this is a follow-up resend of a message already sent once, with `message` updated
+   *  to a since-resolved chat command's output. */
+  edited: boolean;
 }
 
 function parseClanRankInfo(raw: unknown): RankInfo | null {
@@ -78,9 +104,21 @@ export function parseChatRelayMessage(raw: unknown): ParsedChatMessage | null {
   const message = m.text.trim();
   if (!message || message.length > MAX_CONTENT_LENGTH) return null;
 
+  if (typeof m.id !== 'number' || !Number.isFinite(m.id)) return null;
+  if (typeof m.timestamp !== 'number' || !Number.isFinite(m.timestamp)) return null;
+  // Anything other than the literal `true` is treated as "not an edited resend" — absent, false,
+  // or a malformed value all mean the same thing here.
+  const edited = m.edited === true;
+
   if (!r.user || typeof r.user !== 'object') return null;
   const u = r.user as Record<string, unknown>;
   if (typeof u.name !== 'string' || !u.name.trim() || u.name.length > MAX_NAME_LENGTH) return null;
+  // Left exactly as the plugin sends it - including any leading `<img=N>` mod/ironman-status tag
+  // and, for a two-word RSN, an embedded U+00A0 (non-breaking space) - since the frontend parses
+  // that tag for the status icon (chatIcons.ts's parsePlayerName) and a NBSP renders identically
+  // to a normal space in HTML either way. Where a *clean* username is actually needed (resolving
+  // !log/!pets against RuneProfile's/RuneLite's own API - services/itemLogResolver.ts), that
+  // sanitization happens there instead, scoped to just that lookup rather than this display field.
   const sender = u.name.trim();
 
   // The chat name lives in whichever of friendsChat/clanChat matches this message's own declared
@@ -96,7 +134,17 @@ export function parseChatRelayMessage(raw: unknown): ParsedChatMessage | null {
     ? getFriendsChatRankInfo(typeof u.friendsChatRank === 'string' ? u.friendsChatRank : undefined)
     : parseClanRankInfo(u.clanRank);
 
-  return { channelType, chatName, sender, message, rankInfo };
+  return {
+    channelType,
+    chatName,
+    sender,
+    message,
+    rankInfo,
+    sourceId: m.id,
+    sourceTimestamp: m.timestamp,
+    sourceType: m.type as string,
+    edited,
+  };
 }
 
 // ── Chat-name → community classification ────────────────────────────────────
@@ -279,7 +327,32 @@ export async function handleChatRelayPayload(rawMessage: unknown, sourceIp: stri
     });
   }
 
-  broadcastChatMessage(binding.communityId, binding.channelType, parsed.sender, parsed.message, parsed.rankInfo ?? undefined);
+  // `!log <page>`/`!log missing <page>`/`!pets` get their real item data resolved here, from
+  // RuneProfile's own API (services/itemLogResolver.ts) — not from any `<img=N>` tag the message
+  // text might contain, which is a client-local, per-viewer-session sprite index with no relation
+  // to the real item id. This does add a bounded network round trip before responding to the
+  // relay POST, but only for a message that matches one of these two commands; every other chat
+  // line is entirely unaffected. On success, the broadcast `message` becomes the resolution's own
+  // clean summary (e.g. "Cyclopes (8/8):") in place of the raw command/plugin-rewritten text —
+  // `forwardChatWebhookPayload` above already ran with the original text, unaffected by this.
+  const itemLogCommand = detectItemLogCommand(parsed.message);
+  const resolution = itemLogCommand ? await resolveItemLogCommand(parsed.sender, itemLogCommand) : null;
+
+  broadcastChatMessage(
+    binding.communityId,
+    binding.channelType,
+    parsed.sender,
+    resolution ? resolution.summary : parsed.message,
+    parsed.rankInfo ?? undefined,
+    {
+      id: parsed.sourceId,
+      timestamp: parsed.sourceTimestamp,
+      type: parsed.sourceType,
+      edited: parsed.edited,
+    },
+    resolution?.items,
+    resolution?.showQuantities,
+  );
 
   log(`Chat relay: ${binding.channelType} message for community ${binding.communityId} from ${parsed.sender}`);
   return { status: 'forwarded', communityId: binding.communityId, channelType: binding.channelType };

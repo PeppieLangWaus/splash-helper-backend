@@ -12,6 +12,7 @@ import communitiesRouter from '../routes/communities';
 import communityBotRouter from '../routes/communityBot';
 import chatChannelsRouter from '../routes/chatChannels';
 import chatRelayRouter from '../routes/chatRelay';
+import itemsRouter from '../routes/items';
 
 export function createTestApp() {
   const app = express();
@@ -25,6 +26,7 @@ export function createTestApp() {
   app.use('/api/community-bot', communityBotRouter);
   app.use('/api/chat-channels', chatChannelsRouter);
   app.use('/api/chat-relay', chatRelayRouter);
+  app.use('/api/items', itemsRouter);
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   return app;
 }
