@@ -193,6 +193,10 @@ export interface ActiveSessionState {
   sessionData: SessionData | null;
   authenticated: boolean;
   lastUpdate: number;
+  /** When true, `sweepInactiveSessions` skips this session regardless of inactivity.
+   *  Only ever set via the dev view (see routes/dev.ts) for fake sessions that should
+   *  stick around without needing to be kept alive. */
+  pinned?: boolean;
 }
 
 // ── JWT payload ──────────────────────────────────────────────────────────────
