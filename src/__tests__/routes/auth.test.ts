@@ -5,6 +5,7 @@ import { connectTestDB, disconnectTestDB, clearCollections } from '../testDb';
 import { createTestApp } from '../testApp';
 import { User } from '../../models/User';
 import { EmailVerificationToken } from '../../models/EmailVerificationToken';
+import { PasswordResetToken } from '../../models/PasswordResetToken';
 import { generateToken } from '../../utils/secureToken';
 
 const app = createTestApp();
@@ -282,5 +283,107 @@ describe('POST /api/auth/resend-verification', () => {
     const tokens = await EmailVerificationToken.find({ userId: user._id });
     expect(tokens).toHaveLength(1);
     expect(tokens[0].tokenHash).not.toBe('stale');
+  });
+});
+
+describe('POST /api/auth/forgot-password', () => {
+  it('returns the same generic message whether or not the email is registered', async () => {
+    const res1 = await request(app).post('/api/auth/forgot-password').send({ email: 'nobody@example.com' });
+    const res2 = await request(app).post('/api/auth/forgot-password').send({});
+    expect(res1.status).toBe(200);
+    expect(res2.status).toBe(200);
+    expect(res1.body.message).toBe(res2.body.message);
+  });
+
+  it('creates a reset token only for a verified, matching email', async () => {
+    const hash = await bcrypt.hash('password123', 12);
+    const user = await User.create({
+      username: 'alice', passwordHash: hash, token: 'tok1', isAdmin: false, setupLinkUsed: true,
+      email: 'alice@example.com', emailVerifiedAt: new Date(),
+    });
+
+    await request(app).post('/api/auth/forgot-password').send({ email: 'alice@example.com' }).expect(200);
+
+    const tokens = await PasswordResetToken.find({ userId: user._id });
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0].requestedByAdmin).toBe(false);
+  });
+
+  it('does not create a token for an unverified email', async () => {
+    const hash = await bcrypt.hash('password123', 12);
+    const user = await User.create({
+      username: 'alice', passwordHash: hash, token: 'tok1', isAdmin: false, setupLinkUsed: true,
+      email: 'alice@example.com',
+    });
+
+    await request(app).post('/api/auth/forgot-password').send({ email: 'alice@example.com' }).expect(200);
+
+    expect(await PasswordResetToken.countDocuments({ userId: user._id })).toBe(0);
+  });
+});
+
+describe('POST /api/auth/reset-password/:token', () => {
+  async function makeVerifiedUser() {
+    const hash = await bcrypt.hash('old-pass', 12);
+    return User.create({
+      username: 'alice', passwordHash: hash, token: 'tok1', isAdmin: false, setupLinkUsed: true,
+      email: 'alice@example.com', emailVerifiedAt: new Date(),
+    });
+  }
+
+  it('returns 400 for a too-short newPassword', async () => {
+    const res = await request(app).post('/api/auth/reset-password/whatever').send({ newPassword: 'short' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 for an unknown token', async () => {
+    const res = await request(app).post('/api/auth/reset-password/not-a-real-token').send({ newPassword: 'validpass123' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 for an expired token', async () => {
+    const user = await makeVerifiedUser();
+    const { raw, hash: tokenHash } = generateToken();
+    await PasswordResetToken.create({ userId: user._id, tokenHash, expiresAt: new Date(Date.now() - 1000) });
+
+    const res = await request(app).post(`/api/auth/reset-password/${raw}`).send({ newPassword: 'validpass123' });
+    expect(res.status).toBe(400);
+  });
+
+  it('resets the password, bumps tokenVersion, and consumes the token', async () => {
+    const user = await makeVerifiedUser();
+    const { raw, hash: tokenHash } = generateToken();
+    await PasswordResetToken.create({ userId: user._id, tokenHash, expiresAt: new Date(Date.now() + 60_000) });
+
+    const res = await request(app).post(`/api/auth/reset-password/${raw}`).send({ newPassword: 'new-valid-pass' });
+    expect(res.status).toBe(200);
+    expect(res.body.token).toBeDefined();
+
+    const updated = await User.findOne({ username: 'alice' });
+    expect(await bcrypt.compare('new-valid-pass', updated!.passwordHash)).toBe(true);
+    expect(updated!.tokenVersion).toBe(1);
+    expect(await PasswordResetToken.countDocuments({ userId: user._id })).toBe(0);
+  });
+
+  it('cannot be used twice', async () => {
+    const user = await makeVerifiedUser();
+    const { raw, hash: tokenHash } = generateToken();
+    await PasswordResetToken.create({ userId: user._id, tokenHash, expiresAt: new Date(Date.now() + 60_000) });
+
+    await request(app).post(`/api/auth/reset-password/${raw}`).send({ newPassword: 'first-new-pass' }).expect(200);
+    const second = await request(app).post(`/api/auth/reset-password/${raw}`).send({ newPassword: 'second-new-pass' });
+    expect(second.status).toBe(400);
+  });
+
+  it('invalidates a session token that was issued before the reset', async () => {
+    const user = await makeVerifiedUser();
+    const oldSessionToken = jwt.sign({ sub: user.username, isAdmin: false, tv: 0 }, JWT_SECRET, { expiresIn: '1h' });
+
+    const { raw, hash: tokenHash } = generateToken();
+    await PasswordResetToken.create({ userId: user._id, tokenHash, expiresAt: new Date(Date.now() + 60_000) });
+    await request(app).post(`/api/auth/reset-password/${raw}`).send({ newPassword: 'new-valid-pass' }).expect(200);
+
+    const res = await request(app).get('/api/splashers/alice').set('Authorization', `Bearer ${oldSessionToken}`);
+    expect(res.status).toBe(401);
   });
 });
