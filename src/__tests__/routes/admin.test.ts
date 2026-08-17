@@ -7,6 +7,8 @@ import { User } from '../../models/User';
 import { ArchivedSession } from '../../models/ArchivedSession';
 import { Community } from '../../models/Community';
 import { makeSessionData } from '../fixtures';
+import { PasswordResetToken } from '../../models/PasswordResetToken';
+import { SecurityEvent } from '../../models/SecurityEvent';
 
 const app = createTestApp();
 const JWT_SECRET = 'test-jwt-secret';
@@ -354,5 +356,59 @@ describe('GET /api/admin/communities', () => {
       .set('Authorization', `Bearer ${makeToken('admin', true)}`);
     expect(res.status).toBe(200);
     expect(res.body.communities).toHaveLength(2);
+  });
+});
+
+describe('POST /api/admin/users/:username/send-reset-link', () => {
+  it('returns 401 without auth', async () => {
+    await request(app).post('/api/admin/users/alice/send-reset-link').expect(401);
+  });
+
+  it('returns 403 for non-admin', async () => {
+    await createUser('alice');
+    const res = await request(app)
+      .post('/api/admin/users/alice/send-reset-link')
+      .set('Authorization', `Bearer ${makeToken('alice', false)}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 for an unknown user', async () => {
+    await createUser('admin', true);
+    const res = await request(app)
+      .post('/api/admin/users/nobody/send-reset-link')
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 when the target has no verified email', async () => {
+    await createUser('alice');
+    await createUser('admin', true);
+    const res = await request(app)
+      .post('/api/admin/users/alice/send-reset-link')
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('sends a reset link, logs a SecurityEvent, and never returns a raw token', async () => {
+    const alice = await createUser('alice');
+    alice.email = 'alice@example.com';
+    alice.emailVerifiedAt = new Date();
+    await alice.save();
+    await createUser('admin', true);
+
+    const res = await request(app)
+      .post('/api/admin/users/alice/send-reset-link')
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toMatch(/[0-9a-f]{64}/); // no raw 32-byte hex token anywhere in the response
+
+    const tokens = await PasswordResetToken.find({ userId: alice._id });
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0].requestedByAdmin).toBe(true);
+
+    const events = await SecurityEvent.find({ type: 'admin-generated-reset-link' });
+    expect(events).toHaveLength(1);
+    expect(events[0].adminUsername).toBe('admin');
+    expect(events[0].targetUsername).toBe('alice');
   });
 });
