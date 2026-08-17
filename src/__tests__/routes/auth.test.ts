@@ -120,70 +120,11 @@ describe('POST /api/auth/setup/:setupToken', () => {
   });
 });
 
-describe('POST /api/auth/reset-password', () => {
-  it('returns 400 when username, token, or newPassword missing', async () => {
-    await request(app).post('/api/auth/reset-password').send({}).expect(400);
-    await request(app).post('/api/auth/reset-password').send({ username: 'alice', token: 'tok1' }).expect(400);
-  });
-
-  it('returns 400 for a too-short newPassword', async () => {
-    const hash = await bcrypt.hash('old-pass', 12);
-    await User.create({ username: 'alice', passwordHash: hash, token: 'tok1', isAdmin: false, setupLinkUsed: true });
-
+describe('POST /api/auth/reset-password (legacy sync-token route)', () => {
+  it('no longer exists at the old bare path', async () => {
     const res = await request(app)
       .post('/api/auth/reset-password')
-      .send({ username: 'alice', token: 'tok1', newPassword: 'short' });
-    expect(res.status).toBe(400);
-  });
-
-  it('returns 401 for a non-existent user', async () => {
-    const res = await request(app)
-      .post('/api/auth/reset-password')
-      .send({ username: 'nobody', token: 'tok1', newPassword: 'validpass123' });
-    expect(res.status).toBe(401);
-  });
-
-  it('returns 401 for a mismatched token', async () => {
-    const hash = await bcrypt.hash('old-pass', 12);
-    await User.create({ username: 'alice', passwordHash: hash, token: 'tok1', isAdmin: false, setupLinkUsed: true });
-
-    const res = await request(app)
-      .post('/api/auth/reset-password')
-      .send({ username: 'alice', token: 'wrong-token', newPassword: 'validpass123' });
-    expect(res.status).toBe(401);
-  });
-
-  it('resets the password and returns a JWT on a matching token', async () => {
-    const hash = await bcrypt.hash('old-pass', 12);
-    await User.create({ username: 'alice', passwordHash: hash, token: 'tok1', isAdmin: false, setupLinkUsed: true });
-
-    const res = await request(app)
-      .post('/api/auth/reset-password')
-      .send({ username: 'alice', token: 'tok1', newPassword: 'new-valid-pass' });
-    expect(res.status).toBe(200);
-    expect(res.body.token).toBeDefined();
-    const payload = jwt.verify(res.body.token, JWT_SECRET) as { sub: string };
-    expect(payload.sub).toBe('alice');
-
-    const user = await User.findOne({ username: 'alice' });
-    expect(await bcrypt.compare('new-valid-pass', user!.passwordHash)).toBe(true);
-    expect(await bcrypt.compare('old-pass', user!.passwordHash)).toBe(false);
-  });
-
-  it('rate-limits repeated attempts from the same client', async () => {
-    const hash = await bcrypt.hash('old-pass', 12);
-    await User.create({ username: 'alice', passwordHash: hash, token: 'tok1', isAdmin: false, setupLinkUsed: true });
-
-    let sawRateLimited = false;
-    for (let i = 0; i < 15; i++) {
-      const res = await request(app)
-        .post('/api/auth/reset-password')
-        .send({ username: 'alice', token: 'wrong-token', newPassword: 'validpass123' });
-      if (res.status === 429) {
-        sawRateLimited = true;
-        break;
-      }
-    }
-    expect(sawRateLimited).toBe(true);
+      .send({ username: 'alice', token: 'tok1', newPassword: 'validpass123' });
+    expect(res.status).toBe(404);
   });
 });

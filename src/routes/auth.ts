@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { timingSafeEqual } from 'crypto';
 import { User } from '../models/User';
 import { SetupLinkJwtPayload } from '../types';
 import { requireEnv } from '../config/env';
@@ -94,55 +93,6 @@ router.post('/setup/:setupToken', async (req: Request, res: Response): Promise<v
   const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible, tv: user.tokenVersion };
   const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '7d' });
   res.json({ message: 'Account set up successfully', token, username: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible });
-});
-
-const resetPasswordLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
-
-function tokensMatch(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
-
-/**
- * POST /auth/reset-password
- * Body: { username: string; token: string; newPassword: string }
- * The plugin-held sync token doubles as proof of account ownership, so a user who forgot
- * their web password (but still has their RuneLite token) can reset it without any email
- * infrastructure or admin intervention.
- */
-router.post('/reset-password', resetPasswordLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { username, token, newPassword } = req.body as { username?: string; token?: string; newPassword?: string };
-
-  if (!username || !token || !newPassword) {
-    res.status(400).json({ error: 'username, token, and newPassword are required' });
-    return;
-  }
-
-  if (newPassword.length < 8) {
-    res.status(400).json({ error: 'Password must be at least 8 characters' });
-    return;
-  }
-
-  const user = await User.findOne({ username });
-  if (!user || !tokensMatch(user.token, token)) {
-    res.status(401).json({ error: 'Invalid username or token' });
-    return;
-  }
-
-  user.passwordHash = await bcrypt.hash(newPassword, 12);
-  await user.save();
-
-  const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible };
-  const jwtToken = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '7d' });
-  res.json({
-    message: 'Password reset successfully',
-    token: jwtToken,
-    username: user.username,
-    isAdmin: user.isAdmin,
-    communityEligible: user.communityEligible,
-  });
 });
 
 /**
