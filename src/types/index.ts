@@ -201,6 +201,12 @@ export interface JwtPayload {
   sub: string;   // username
   isAdmin: boolean;
   communityEligible: boolean;
+  /** User.tokenVersion at the time this JWT was issued. requireAuth compares this against the
+   *  live value on the User document — bumping tokenVersion (e.g. on password reset) instantly
+   *  invalidates every JWT issued before the bump, even ones that haven't expired yet. Missing
+   *  on tokens minted before this field existed; treated as 0, matching User.tokenVersion's own
+   *  default, so already-issued tokens keep working unaffected. */
+  tv?: number;
   iat?: number;
   exp?: number;
 }

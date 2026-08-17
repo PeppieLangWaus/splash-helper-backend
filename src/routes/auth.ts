@@ -43,7 +43,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const payload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible };
+  const payload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible, tv: user.tokenVersion };
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, username: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible });
 });
@@ -91,7 +91,7 @@ router.post('/setup/:setupToken', async (req: Request, res: Response): Promise<v
   user.setupLinkUsed = true;
   await user.save();
 
-  const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible };
+  const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible, tv: user.tokenVersion };
   const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '7d' });
   res.json({ message: 'Account set up successfully', token, username: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible });
 });

@@ -49,12 +49,13 @@ describe('GET /api/admin/users', () => {
   it('returns all users for admin', async () => {
     await createUser('alice');
     await createUser('bob');
+    await createUser('admin', true);
 
     const res = await request(app)
       .get('/api/admin/users')
       .set('Authorization', `Bearer ${makeToken('admin', true)}`);
     expect(res.status).toBe(200);
-    expect(res.body.users).toHaveLength(2);
+    expect(res.body.users).toHaveLength(3); // alice, bob, and the requesting admin itself
     // Ensure passwords are excluded
     for (const u of res.body.users) {
       expect(u.passwordHash).toBeUndefined();
@@ -65,6 +66,7 @@ describe('GET /api/admin/users', () => {
 describe('POST /api/admin/promote/:username', () => {
   it('returns 403 without ADMIN_SECRET header', async () => {
     await createUser('alice');
+    await createUser('admin', true);
     const res = await request(app)
       .post('/api/admin/promote/alice')
       .set('Authorization', `Bearer ${makeToken('admin', true)}`);
@@ -73,6 +75,7 @@ describe('POST /api/admin/promote/:username', () => {
 
   it('returns 403 with wrong ADMIN_SECRET', async () => {
     await createUser('alice');
+    await createUser('admin', true);
     const res = await request(app)
       .post('/api/admin/promote/alice')
       .set('Authorization', `Bearer ${makeToken('admin', true)}`)
@@ -82,6 +85,7 @@ describe('POST /api/admin/promote/:username', () => {
 
   it('toggles isAdmin for the user', async () => {
     await createUser('alice', false);
+    await createUser('admin', true);
 
     // Promote
     const res1 = await request(app)
@@ -101,6 +105,7 @@ describe('POST /api/admin/promote/:username', () => {
   });
 
   it('returns 404 for non-existent user', async () => {
+    await createUser('admin', true);
     const res = await request(app)
       .post('/api/admin/promote/nobody')
       .set('Authorization', `Bearer ${makeToken('admin', true)}`)
@@ -112,6 +117,7 @@ describe('POST /api/admin/promote/:username', () => {
 describe('DELETE /api/admin/users/:username', () => {
   it('deletes user and their sessions', async () => {
     const user = await createUser('alice');
+    await createUser('admin', true);
     await ArchivedSession.create({
       sessionId: 'sid1',
       createdTimestamp: 1000,
@@ -131,6 +137,7 @@ describe('DELETE /api/admin/users/:username', () => {
   });
 
   it('returns 404 for unknown user', async () => {
+    await createUser('admin', true);
     const res = await request(app)
       .delete('/api/admin/users/nobody')
       .set('Authorization', `Bearer ${makeToken('admin', true)}`);
@@ -142,6 +149,7 @@ describe('GET /api/admin/sessions', () => {
   it('returns all sessions across all users', async () => {
     const u1 = await createUser('alice');
     const u2 = await createUser('bob');
+    await createUser('admin', true);
 
     await ArchivedSession.create({
       sessionId: 'sid-a',
@@ -172,6 +180,7 @@ describe('GET /api/admin/sessions', () => {
 describe('DELETE /api/admin/sessions/:sessionId', () => {
   it('deletes specified session', async () => {
     const user = await createUser('alice');
+    await createUser('admin', true);
     await ArchivedSession.create({
       sessionId: 'del-sid',
       createdTimestamp: 1000,
@@ -189,6 +198,7 @@ describe('DELETE /api/admin/sessions/:sessionId', () => {
   });
 
   it('returns 404 for unknown session', async () => {
+    await createUser('admin', true);
     const res = await request(app)
       .delete('/api/admin/sessions/nope')
       .set('Authorization', `Bearer ${makeToken('admin', true)}`);
@@ -199,6 +209,7 @@ describe('DELETE /api/admin/sessions/:sessionId', () => {
 describe('POST /api/admin/community-eligibility/:username', () => {
   it('toggles communityEligible for the user', async () => {
     await createUser('alice');
+    await createUser('admin', true);
 
     const res1 = await request(app)
       .post('/api/admin/community-eligibility/alice')
@@ -214,6 +225,7 @@ describe('POST /api/admin/community-eligibility/:username', () => {
   });
 
   it('returns 404 for non-existent user', async () => {
+    await createUser('admin', true);
     const res = await request(app)
       .post('/api/admin/community-eligibility/nobody')
       .set('Authorization', `Bearer ${makeToken('admin', true)}`);
@@ -233,6 +245,7 @@ describe('community member assignment', () => {
   it('assigns and removes a splasher from a community', async () => {
     const owner = await createUser('alice');
     const splasher = await createUser('carol');
+    await createUser('admin', true);
     const community = await Community.create({ name: 'Test Community', ownerIds: [owner._id], memberUserIds: [] });
 
     const assignRes = await request(app)
@@ -254,6 +267,7 @@ describe('community member assignment', () => {
 
   it('returns 404 when assigning an unknown user', async () => {
     const owner = await createUser('alice');
+    await createUser('admin', true);
     const community = await Community.create({ name: 'Test Community', ownerIds: [owner._id], memberUserIds: [] });
 
     const res = await request(app)
@@ -268,6 +282,7 @@ describe('POST /api/admin/communities/:communityId/members (bulk)', () => {
     const owner = await createUser('alice');
     const carol = await createUser('carol');
     const dave = await createUser('dave');
+    await createUser('admin', true);
     const community = await Community.create({ name: 'Test Community', ownerIds: [owner._id], memberUserIds: [] });
 
     const res = await request(app)
@@ -288,6 +303,7 @@ describe('POST /api/admin/communities/:communityId/members (bulk)', () => {
   it('does not duplicate members already assigned', async () => {
     const owner = await createUser('alice');
     const carol = await createUser('carol');
+    await createUser('admin', true);
     const community = await Community.create({
       name: 'Test Community',
       ownerIds: [owner._id],
@@ -306,6 +322,7 @@ describe('POST /api/admin/communities/:communityId/members (bulk)', () => {
 
   it('returns 400 for an empty usernames array', async () => {
     const owner = await createUser('alice');
+    await createUser('admin', true);
     const community = await Community.create({ name: 'Test Community', ownerIds: [owner._id], memberUserIds: [] });
 
     const res = await request(app)
@@ -316,6 +333,7 @@ describe('POST /api/admin/communities/:communityId/members (bulk)', () => {
   });
 
   it('returns 404 for an unknown community', async () => {
+    await createUser('admin', true);
     const res = await request(app)
       .post('/api/admin/communities/000000000000000000000000/members')
       .set('Authorization', `Bearer ${makeToken('admin', true)}`)
@@ -327,6 +345,7 @@ describe('POST /api/admin/communities/:communityId/members (bulk)', () => {
 describe('GET /api/admin/communities', () => {
   it('returns all communities', async () => {
     const owner = await createUser('alice');
+    await createUser('admin', true);
     await Community.create({ name: 'Community A', ownerIds: [owner._id], memberUserIds: [] });
     await Community.create({ name: 'Community B', ownerIds: [owner._id], memberUserIds: [] });
 

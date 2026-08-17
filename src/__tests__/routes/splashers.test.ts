@@ -97,6 +97,9 @@ describe('GET /api/splashers/:username', () => {
   it('admin can access any user\'s data', async () => {
     const hash = await bcrypt.hash('pass', 12);
     const user = await User.create({ username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true });
+    // requireAuth (see middleware/auth.ts) now checks tokenVersion against a real User document,
+    // so the token's subject has to actually exist — not just claim isAdmin in the payload.
+    await User.create({ username: 'admin', passwordHash: hash, token: 'admin-tok', isAdmin: true, setupLinkUsed: true });
 
     await ArchivedSession.create({
       sessionId: 's2',
@@ -115,9 +118,14 @@ describe('GET /api/splashers/:username', () => {
   });
 
   it('returns 404 for unknown user', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    // The requester has to be a real user (requireAuth checks tokenVersion against an actual
+    // User document) — this test is about the *target* username being unknown, not the caller.
+    await User.create({ username: 'admin', passwordHash: hash, token: 'admin-tok', isAdmin: true, setupLinkUsed: true });
+
     const res = await request(app)
       .get('/api/splashers/nobody')
-      .set('Authorization', `Bearer ${makeToken('nobody')}`);
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
     expect(res.status).toBe(404);
   });
 
