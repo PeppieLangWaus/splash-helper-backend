@@ -188,6 +188,34 @@ authenticated mail "from" a personal inbox through it.
   the target has no verified email; shows a confirmation toast only, never a
   link.
 
+### Chatbox reminder for missing/unverified email
+
+`GET /splashers/:username` (the existing self-lookup route) additionally
+returns `email`/`emailVerifiedAt` when the requester is viewing their own
+data — same self-only gating it already applies to the plugin `token` field.
+
+A new `useEmailReminder` hook (alongside Chatbox's other feed hooks) fires
+once per mount (i.e. once per fresh visit — not on an interval) for an
+authenticated user whose `emailVerifiedAt` is unset:
+
+- No email on file → `logSystemEvent('Add an email to your account for
+  recovery access.')`
+- Email added but not yet verified → `logSystemEvent("Your email isn't
+  verified yet — check your inbox to finish setup.")`
+
+Nothing fires once `emailVerifiedAt` is set.
+
+The reminder is also visually surfaced, not just logged quietly:
+- Chatbox gains a transient `spotlightMessageId` state. When the reminder
+  fires, it switches the active tab to Private, opens the chat window if
+  closed, and sets the spotlight to the new message's id. While set, the
+  Private tab renders only that one message instead of the full log.
+- The chatbox container briefly gets a `chatbox--alert` CSS class (a
+  yellow/orange pulse animation), cleared after ~1.5s via a timeout.
+- Any manual tab selection through the existing `handleSelect` clears the
+  spotlight — so switching to All and back to Private afterward shows the
+  full Private history again, not just the warning.
+
 ## Testing
 
 Follows the existing `__tests__/routes/auth.test.ts` pattern:
