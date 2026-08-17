@@ -5,6 +5,10 @@ import { User } from '../models/User';
 import { SetupLinkJwtPayload } from '../types';
 import { requireEnv } from '../config/env';
 import { rateLimit } from '../middleware/rateLimit';
+import { requireAuth } from '../middleware/auth';
+import { EmailVerificationToken } from '../models/EmailVerificationToken';
+import { generateToken, hashToken } from '../utils/secureToken';
+import { sendVerificationEmail, sendEmailChangedNotice } from '../services/email';
 
 const router = Router();
 const JWT_SECRET = requireEnv('JWT_SECRET');
@@ -93,6 +97,144 @@ router.post('/setup/:setupToken', async (req: Request, res: Response): Promise<v
   const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible, tv: user.tokenVersion };
   const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '7d' });
   res.json({ message: 'Account set up successfully', token, username: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible });
+});
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60 * 1000;
+
+const emailChangeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyFn: (req) => req.user?.sub ?? req.ip ?? 'unknown',
+});
+
+/**
+ * POST /auth/email
+ * Body: { email: string; currentPassword: string }
+ * Attaches or replaces the caller's own email. Requires their current password as a second
+ * factor, so a stolen JWT alone can't plant a backdoor recovery address. Always resets
+ * emailVerifiedAt — even re-submitting the same address has to be re-verified — and sends a
+ * fresh verification link. If a different, already-verified email is being replaced, also
+ * notifies the old address, so a hijacker with temporary access can't quietly redirect recovery
+ * without the real owner noticing.
+ */
+router.post('/email', requireAuth, emailChangeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { email, currentPassword } = req.body as { email?: string; currentPassword?: string };
+
+  if (!email || !currentPassword) {
+    res.status(400).json({ error: 'email and currentPassword are required' });
+    return;
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!EMAIL_RE.test(normalizedEmail)) {
+    res.status(400).json({ error: 'Invalid email address' });
+    return;
+  }
+
+  const user = await User.findOne({ username: req.user!.sub });
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!valid) {
+    res.status(401).json({ error: 'Incorrect password' });
+    return;
+  }
+
+  const previousVerifiedEmail = user.emailVerifiedAt ? user.email : undefined;
+
+  user.email = normalizedEmail;
+  user.emailVerifiedAt = undefined;
+  try {
+    await user.save();
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && (err as { code?: number }).code === 11000) {
+      res.status(409).json({ error: 'That email is already in use on another account' });
+      return;
+    }
+    throw err;
+  }
+
+  await EmailVerificationToken.deleteMany({ userId: user._id });
+  const { raw, hash } = generateToken();
+  await EmailVerificationToken.create({
+    userId: user._id,
+    tokenHash: hash,
+    expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS),
+  });
+
+  await sendVerificationEmail(normalizedEmail, `${FRONTEND_URL}/verify-email?token=${raw}`);
+  if (previousVerifiedEmail && previousVerifiedEmail !== normalizedEmail) {
+    await sendEmailChangedNotice(previousVerifiedEmail);
+  }
+
+  res.json({ email: user.email, emailVerifiedAt: null, message: 'Verification email sent.' });
+});
+
+/**
+ * GET /auth/verify-email/:token
+ * Public — the token itself is the credential. Single use, 24h expiry.
+ */
+router.get('/verify-email/:token', async (req: Request, res: Response): Promise<void> => {
+  const { token } = req.params;
+  const record = await EmailVerificationToken.findOne({ tokenHash: hashToken(token), expiresAt: { $gt: new Date() } });
+  if (!record) {
+    res.status(400).json({ error: 'Invalid or expired link' });
+    return;
+  }
+
+  const user = await User.findById(record.userId);
+  if (!user) {
+    res.status(400).json({ error: 'Invalid or expired link' });
+    return;
+  }
+
+  user.emailVerifiedAt = new Date();
+  await user.save();
+  await EmailVerificationToken.deleteOne({ _id: record._id });
+
+  res.json({ message: 'Email verified.' });
+});
+
+const resendVerificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  keyFn: (req) => req.user?.sub ?? req.ip ?? 'unknown',
+});
+
+/**
+ * POST /auth/resend-verification
+ * Re-sends a verification link for the caller's already-attached, still-unverified email. No
+ * currentPassword needed — nothing about the account changes, this only resends.
+ */
+router.post('/resend-verification', requireAuth, resendVerificationLimiter, async (req: Request, res: Response): Promise<void> => {
+  const user = await User.findOne({ username: req.user!.sub });
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  if (!user.email) {
+    res.status(400).json({ error: 'No email on file to verify' });
+    return;
+  }
+  if (user.emailVerifiedAt) {
+    res.status(400).json({ error: 'Email is already verified' });
+    return;
+  }
+
+  await EmailVerificationToken.deleteMany({ userId: user._id });
+  const { raw, hash } = generateToken();
+  await EmailVerificationToken.create({
+    userId: user._id,
+    tokenHash: hash,
+    expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS),
+  });
+
+  await sendVerificationEmail(user.email, `${FRONTEND_URL}/verify-email?token=${raw}`);
+  res.json({ message: 'Verification email sent.' });
 });
 
 /**
