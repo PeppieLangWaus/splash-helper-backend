@@ -1,33 +1,27 @@
+import { Resend } from 'resend';
+
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const EMAIL_FROM_ADDRESS = process.env.EMAIL_FROM_ADDRESS ?? 'Splash Helper <no-reply@example.com>';
-const RESEND_TIMEOUT_MS = 5000;
+
+// Resend's HTTP API rejects requests missing a User-Agent header — the SDK sets one (and every
+// other required header) automatically, so it's used here instead of a raw fetch call.
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 /**
- * Sends one transactional email via Resend's HTTP API. Mirrors generateSetupLink's fallback
- * style in routes/auth.ts: without RESEND_API_KEY configured (local dev, tests), this just logs
+ * Sends one transactional email via the Resend SDK. Mirrors generateSetupLink's fallback style
+ * in routes/auth.ts: without RESEND_API_KEY configured (local dev, tests), this just logs
  * instead of failing outright, so the rest of the app works without needing real mail
  * infrastructure set up.
  */
 async function sendEmail(to: string, subject: string, text: string): Promise<void> {
-  if (!RESEND_API_KEY) {
+  if (!resend) {
     console.log(`[email:dev] to=${to} subject="${subject}"\n${text}`);
     return;
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), RESEND_TIMEOUT_MS);
-  try {
-    const response = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${RESEND_API_KEY}` },
-      body: JSON.stringify({ from: EMAIL_FROM_ADDRESS, to, subject, text }),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new Error(`Resend responded ${response.status}`);
-    }
-  } finally {
-    clearTimeout(timeout);
+  const { error } = await resend.emails.send({ from: EMAIL_FROM_ADDRESS, to, subject, text });
+  if (error) {
+    throw new Error(`Resend error: ${error.message}`);
   }
 }
 
