@@ -25,10 +25,12 @@ const SWEEP_INTERVAL_MS = 2 * 60 * 1000; // check every 2 minutes
 const app = express();
 const PORT = process.env.PORT ?? 3000;
 
-// Trust nginx's X-Forwarded-For/X-Real-IP (see nginx/splasher.help.conf) so req.ip reflects the
-// actual client rather than the reverse proxy — needed for the chat relay's per-source
-// block-list (services/chatRelay.ts) to work at all.
-app.set('trust proxy', 1);
+// Two hops in front of this app: Cloudflare's edge, then nginx (see nginx/splasher.help.conf).
+// `trust proxy` has to count both or req.ip resolves to the wrong hop. That said, most IP uses
+// in this codebase (see utils/clientIp.ts) prefer Cloudflare's CF-Connecting-IP header over
+// req.ip specifically so they don't depend on this hop count staying accurate — this still needs
+// to be right for req.ip itself and anything (e.g. express libs) that reads it directly.
+app.set('trust proxy', 2);
 
 const allowedOrigins = (process.env.CORS_ORIGIN_API ?? process.env.CORS_ORIGIN_WS)
   ?.split(',')

@@ -10,6 +10,7 @@ import { EmailVerificationToken } from '../models/EmailVerificationToken';
 import { PasswordResetToken } from '../models/PasswordResetToken';
 import { generateToken, hashToken } from '../utils/secureToken';
 import { sendVerificationEmail, sendEmailChangedNotice, sendPasswordResetEmail, sendPasswordChangedNotice } from '../services/email';
+import { getClientIp } from '../utils/clientIp';
 
 const router = Router();
 const JWT_SECRET = requireEnv('JWT_SECRET');
@@ -106,7 +107,7 @@ const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const emailChangeLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
-  keyFn: (req) => req.user?.sub ?? req.ip ?? 'unknown',
+  keyFn: (req) => req.user?.sub ?? getClientIp(req),
 });
 
 /**
@@ -203,7 +204,7 @@ router.get('/verify-email/:token', async (req: Request, res: Response): Promise<
 const resendVerificationLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 3,
-  keyFn: (req) => req.user?.sub ?? req.ip ?? 'unknown',
+  keyFn: (req) => req.user?.sub ?? getClientIp(req),
 });
 
 /**

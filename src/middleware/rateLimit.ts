@@ -1,11 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
+import { getClientIp } from '../utils/clientIp';
 
 interface RateLimitOptions {
   windowMs: number;
   max: number;
-  /** Defaults to per-IP (`req.ip`). Override to key by something else — e.g. the authenticated
-   *  username, or a field pulled from the request body — for a per-account/per-target limiter
-   *  instead of a per-client one. */
+  /** Defaults to per-IP (`getClientIp(req)`). Override to key by something else — e.g. the
+   *  authenticated username, or a field pulled from the request body — for a per-account/
+   *  per-target limiter instead of a per-client one. */
   keyFn?: (req: Request) => string;
 }
 
@@ -17,7 +18,7 @@ export function rateLimit({ windowMs, max, keyFn }: RateLimitOptions) {
   const hits = new Map<string, number[]>();
 
   return (req: Request, res: Response, next: NextFunction): void => {
-    const key = (keyFn ? keyFn(req) : req.ip) ?? 'unknown';
+    const key = (keyFn ? keyFn(req) : getClientIp(req)) ?? 'unknown';
     const now = Date.now();
     const windowStart = now - windowMs;
 
