@@ -138,6 +138,7 @@ router.post('/sessions', async (req: Request, res: Response): Promise<void> => {
     res.status(409).json({ error: `Fake session for "${username}" already exists` });
     return;
   }
+  const pinned = req.body?.pinned === true;
 
   const user = await ensureFakeUser(username);
 
@@ -148,6 +149,7 @@ router.post('/sessions', async (req: Request, res: Response): Promise<void> => {
     authenticated: true,
     sessionData: randomFakeSessionData(username),
     lastUpdate: Date.now(),
+    pinned,
   };
   setSession(username, state);
 
@@ -170,7 +172,29 @@ router.post('/sessions', async (req: Request, res: Response): Promise<void> => {
     console.error(`Failed to seed fake historical sessions for "${username}":`, err);
   }
 
-  res.status(201).json({ username, sessionData: state.sessionData, historicalSessionsAdded });
+  res.status(201).json({ username, sessionData: state.sessionData, pinned: state.pinned ?? false, historicalSessionsAdded });
+});
+
+/**
+ * PATCH /dev/sessions/:username/pin
+ * Body: { pinned: boolean }
+ * Toggles whether the inactivity sweeper (`sweepInactiveSessions`, checked
+ * every 2 minutes) is allowed to auto-archive this fake session.
+ */
+router.patch('/sessions/:username/pin', (req: Request, res: Response): void => {
+  const { username } = req.params;
+  const existing = getSession(username);
+  if (!existing) {
+    res.status(404).json({ error: `No fake session for "${username}"` });
+    return;
+  }
+  if (typeof req.body?.pinned !== 'boolean') {
+    res.status(400).json({ error: 'pinned must be a boolean' });
+    return;
+  }
+
+  existing.pinned = req.body.pinned;
+  res.json({ username, pinned: existing.pinned });
 });
 
 router.post('/sessions/:username/tick', (req: Request, res: Response): void => {
