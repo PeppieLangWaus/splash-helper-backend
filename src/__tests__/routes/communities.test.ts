@@ -145,6 +145,9 @@ describe('GET /api/communities/:communityId/splashers and /sessions', () => {
 
   it('allows an admin to access any community', async () => {
     const alice = await createUser('alice', { communityEligible: true });
+    // requireAuth (see middleware/auth.ts) now checks tokenVersion against a real User document,
+    // so the token's subject has to actually exist — not just claim isAdmin in the payload.
+    await createUser('admin', { isAdmin: true });
     const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
 
     const res = await request(app)
@@ -250,6 +253,7 @@ describe('PUT /api/communities/:communityId/webhook', () => {
 
   it('allows an admin to set the webhook for a community they do not own', async () => {
     const alice = await createUser('alice', { communityEligible: true });
+    await createUser('admin', { isAdmin: true });
     const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
 
     const res = await request(app)

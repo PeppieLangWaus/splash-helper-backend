@@ -95,14 +95,18 @@ router.get('/:username', requireAuth, async (req: Request, res: Response): Promi
   }
 
   const sessions = await ArchivedSession.find({ username }).lean();
+  const isSelf = requester.sub === username;
   res.json({
     username,
     sessions,
     discordActiveWebhookUrl: user.discordActiveWebhookUrl,
     discordHistoryWebhookUrl: user.discordHistoryWebhookUrl,
-    // The plugin sync token is only ever included for the splasher viewing their own data —
-    // never when a community owner is looking up one of their members through this same route.
-    token: requester.sub === username ? user.token : undefined,
+    // The plugin sync token and email are only ever included for the splasher viewing their own
+    // data — never when a community owner is looking up one of their members through this same
+    // route.
+    token: isSelf ? user.token : undefined,
+    email: isSelf ? user.email : undefined,
+    emailVerifiedAt: isSelf ? user.emailVerifiedAt : undefined,
   });
 });
 

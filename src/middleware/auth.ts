@@ -3,10 +3,11 @@ import jwt from 'jsonwebtoken';
 import { JwtPayload } from '../types';
 import { requireEnv } from '../config/env';
 import { Community } from '../models/Community';
+import { User } from '../models/User';
 
 const JWT_SECRET = requireEnv('JWT_SECRET');
 
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Authentication required' });
@@ -14,17 +15,29 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
 
   const token = authHeader.slice(7);
+  let payload: JwtPayload;
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
-    req.user = payload;
-    next();
+    payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
   } catch {
     res.status(401).json({ error: 'Invalid or expired token' });
+    return;
   }
+
+  // A password reset bumps the user's live tokenVersion — comparing it against the value this
+  // JWT was issued with instantly invalidates every session token minted before the reset, not
+  // just ones that happen to expire naturally over the following days.
+  const user = await User.findOne({ username: payload.sub }, { tokenVersion: 1 });
+  if (!user || user.tokenVersion !== (payload.tv ?? 0)) {
+    res.status(401).json({ error: 'Invalid or expired token' });
+    return;
+  }
+
+  req.user = payload;
+  next();
 }
 
-export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
-  requireAuth(req, res, () => {
+export async function requireAdmin(req: Request, res: Response, next: NextFunction): Promise<void> {
+  await requireAuth(req, res, () => {
     if (!req.user?.isAdmin) {
       res.status(403).json({ error: 'Admin access required' });
       return;

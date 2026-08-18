@@ -2,12 +2,17 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { IncomingMessage, Server } from 'http';
 import { handleMessage, handleDisconnect } from './handlers';
 import { log, logError } from '../utils/logger';
+import { getCfConnectingIp } from '../utils/clientIp';
 
 export function attachWebSocketServer(httpServer: Server): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
-    log(`WS connection from ${req.socket.remoteAddress}`);
+    // This is a raw `http.IncomingMessage`, not an Express `Request` — it never goes through
+    // Express's `trust proxy` machinery, so `req.socket.remoteAddress` here is always just the
+    // immediate hop (nginx, or Cloudflare's edge IP once that's in front). Logging-only, so this
+    // reads CF-Connecting-IP directly rather than pulling in getClientIp()'s req.ip fallback.
+    log(`WS connection from ${getCfConnectingIp(req.headers) ?? req.socket.remoteAddress}`);
 
     ws.on('message', (data) => {
       const raw = data.toString();
