@@ -263,3 +263,92 @@ describe('PUT /api/splashers/:username/webhook', () => {
     expect(res.body.discordHistoryWebhookUrl).toBe(VALID_WEBHOOK);
   });
 });
+
+describe('splasher voting (no auth required)', () => {
+  const VOTER_A = '203.0.113.1';
+  const VOTER_B = '203.0.113.2';
+
+  async function createAlice() {
+    const hash = await bcrypt.hash('pass', 12);
+    await User.create({ username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true });
+  }
+
+  describe('PUT /api/splashers/:username/vote', () => {
+    it('returns 404 for an unknown splasher', async () => {
+      const res = await request(app)
+        .put('/api/splashers/nobody/vote')
+        .set('X-Forwarded-For', VOTER_A)
+        .send({ value: 1 });
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects an invalid value', async () => {
+      await createAlice();
+      const res = await request(app)
+        .put('/api/splashers/alice/vote')
+        .set('X-Forwarded-For', VOTER_A)
+        .send({ value: 0 });
+      expect(res.status).toBe(400);
+    });
+
+    it('records a like with no auth token needed', async () => {
+      await createAlice();
+      const res = await request(app)
+        .put('/api/splashers/alice/vote')
+        .set('X-Forwarded-For', VOTER_A)
+        .send({ value: 1 });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ likes: 1, dislikes: 0, myVote: 1 });
+    });
+
+    it('does not let the same voter both like and dislike — switching overwrites, not adds', async () => {
+      await createAlice();
+      await request(app).put('/api/splashers/alice/vote').set('X-Forwarded-For', VOTER_A).send({ value: 1 });
+
+      const res = await request(app)
+        .put('/api/splashers/alice/vote')
+        .set('X-Forwarded-For', VOTER_A)
+        .send({ value: -1 });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ likes: 0, dislikes: 1, myVote: -1 });
+    });
+
+    it('does not let the same voter like multiple times — repeating the vote retracts it', async () => {
+      await createAlice();
+      await request(app).put('/api/splashers/alice/vote').set('X-Forwarded-For', VOTER_A).send({ value: 1 });
+
+      const res = await request(app)
+        .put('/api/splashers/alice/vote')
+        .set('X-Forwarded-For', VOTER_A)
+        .send({ value: 1 });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ likes: 0, dislikes: 0, myVote: null });
+    });
+
+    it('tracks separate voters independently', async () => {
+      await createAlice();
+      await request(app).put('/api/splashers/alice/vote').set('X-Forwarded-For', VOTER_A).send({ value: 1 });
+      const res = await request(app)
+        .put('/api/splashers/alice/vote')
+        .set('X-Forwarded-For', VOTER_B)
+        .send({ value: -1 });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ likes: 1, dislikes: 1, myVote: -1 });
+    });
+  });
+
+  describe('GET /api/splashers/:username/votes', () => {
+    it('reports totals and the requesting voter\'s own vote', async () => {
+      await createAlice();
+      await request(app).put('/api/splashers/alice/vote').set('X-Forwarded-For', VOTER_A).send({ value: 1 });
+      await request(app).put('/api/splashers/alice/vote').set('X-Forwarded-For', VOTER_B).send({ value: 1 });
+
+      const resA = await request(app).get('/api/splashers/alice/votes').set('X-Forwarded-For', VOTER_A);
+      expect(resA.status).toBe(200);
+      expect(resA.body).toMatchObject({ likes: 2, dislikes: 0, myVote: 1 });
+
+      const resAnon = await request(app).get('/api/splashers/alice/votes').set('X-Forwarded-For', '203.0.113.99');
+      expect(resAnon.body.myVote).toBeNull();
+    });
+  });
+});

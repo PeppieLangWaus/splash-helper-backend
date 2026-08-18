@@ -1,11 +1,14 @@
 ﻿import { Router, Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth';
+import { rateLimit } from '../middleware/rateLimit';
 import { ArchivedSession } from '../models/ArchivedSession';
 import { User } from '../models/User';
 import { Community } from '../models/Community';
+import { SplasherVote, VoteValue } from '../models/SplasherVote';
 import { JwtPayload } from '../types';
 import { getAll as getActiveSessions } from '../websocket/sessionManager';
 import { resolveWebhookField } from '../services/discordWebhook';
+import { hashVoterIp } from '../utils/voterHash';
 
 /**
  * A requester can view a target user's archived data if they are an admin,
@@ -156,6 +159,75 @@ router.put('/:username/webhook', requireAuth, async (req: Request, res: Response
     discordActiveWebhookUrl: user.discordActiveWebhookUrl,
     discordHistoryWebhookUrl: user.discordHistoryWebhookUrl,
   });
+});
+
+const voteLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60 });
+
+async function getVoteCounts(username: string): Promise<{ likes: number; dislikes: number }> {
+  const [likes, dislikes] = await Promise.all([
+    SplasherVote.countDocuments({ splasherUsername: username, value: 1 }),
+    SplasherVote.countDocuments({ splasherUsername: username, value: -1 }),
+  ]);
+  return { likes, dislikes };
+}
+
+/**
+ * GET /splashers/:username/votes
+ * Public - returns like/dislike totals for a splasher, plus the requester's own vote (if any),
+ * so the frontend can render the like/dislike buttons in the right state without an account.
+ */
+router.get('/:username/votes', async (req: Request, res: Response): Promise<void> => {
+  const { username } = req.params;
+  const voterHash = hashVoterIp(req.ip ?? 'unknown');
+
+  const [{ likes, dislikes }, myVote] = await Promise.all([
+    getVoteCounts(username),
+    SplasherVote.findOne({ splasherUsername: username, voterHash }, { value: 1 }).lean(),
+  ]);
+
+  res.json({ username, likes, dislikes, myVote: myVote?.value ?? null });
+});
+
+/**
+ * PUT /splashers/:username/vote
+ * Public - like or dislike a splasher. Body: { value: 1 | -1 }.
+ * No login required; a voter is identified by a hash of their IP (see utils/voterHash.ts),
+ * and the unique index on SplasherVote guarantees at most one vote per voter per splasher —
+ * voting again with the same value retracts it, voting with the other value switches it.
+ */
+router.put('/:username/vote', voteLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { username } = req.params;
+  const { value } = req.body as { value?: unknown };
+
+  if (value !== 1 && value !== -1) {
+    res.status(400).json({ error: 'value must be 1 (like) or -1 (dislike)' });
+    return;
+  }
+
+  const user = await User.findOne({ username }, { _id: 1 }).lean();
+  if (!user) {
+    res.status(404).json({ error: `User "${username}" not found` });
+    return;
+  }
+
+  const voterHash = hashVoterIp(req.ip ?? 'unknown');
+  const existing = await SplasherVote.findOne({ splasherUsername: username, voterHash }, { value: 1 }).lean();
+
+  let myVote: VoteValue | null;
+  if (existing?.value === value) {
+    await SplasherVote.deleteOne({ splasherUsername: username, voterHash });
+    myVote = null;
+  } else {
+    await SplasherVote.updateOne(
+      { splasherUsername: username, voterHash },
+      { $set: { value } },
+      { upsert: true },
+    );
+    myVote = value;
+  }
+
+  const { likes, dislikes } = await getVoteCounts(username);
+  res.json({ username, likes, dislikes, myVote });
 });
 
 export default router;
