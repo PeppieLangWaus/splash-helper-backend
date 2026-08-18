@@ -94,9 +94,31 @@ describe('GET /api/splashers/:username', () => {
     expect(res.body.sessions).toHaveLength(1);
   });
 
+  it('includes email/emailVerifiedAt for self but not for other viewers', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    await User.create({
+      username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true,
+      email: 'alice@example.com', emailVerifiedAt: new Date(),
+    });
+    await User.create({ username: 'admin', passwordHash: hash, token: 't2', setupLinkUsed: true, isAdmin: true });
+
+    const self = await request(app).get('/api/splashers/alice').set('Authorization', `Bearer ${makeToken('alice')}`);
+    expect(self.status).toBe(200);
+    expect(self.body.email).toBe('alice@example.com');
+    expect(self.body.emailVerifiedAt).toBeDefined();
+
+    const asAdmin = await request(app).get('/api/splashers/alice').set('Authorization', `Bearer ${makeToken('admin', true)}`);
+    expect(asAdmin.status).toBe(200);
+    expect(asAdmin.body.email).toBeUndefined();
+    expect(asAdmin.body.emailVerifiedAt).toBeUndefined();
+  });
+
   it('admin can access any user\'s data', async () => {
     const hash = await bcrypt.hash('pass', 12);
     const user = await User.create({ username: 'alice', passwordHash: hash, token: 't1', setupLinkUsed: true });
+    // requireAuth (see middleware/auth.ts) now checks tokenVersion against a real User document,
+    // so the token's subject has to actually exist — not just claim isAdmin in the payload.
+    await User.create({ username: 'admin', passwordHash: hash, token: 'admin-tok', isAdmin: true, setupLinkUsed: true });
 
     await ArchivedSession.create({
       sessionId: 's2',
@@ -115,9 +137,14 @@ describe('GET /api/splashers/:username', () => {
   });
 
   it('returns 404 for unknown user', async () => {
+    const hash = await bcrypt.hash('pass', 12);
+    // The requester has to be a real user (requireAuth checks tokenVersion against an actual
+    // User document) — this test is about the *target* username being unknown, not the caller.
+    await User.create({ username: 'admin', passwordHash: hash, token: 'admin-tok', isAdmin: true, setupLinkUsed: true });
+
     const res = await request(app)
       .get('/api/splashers/nobody')
-      .set('Authorization', `Bearer ${makeToken('nobody')}`);
+      .set('Authorization', `Bearer ${makeToken('admin', true)}`);
     expect(res.status).toBe(404);
   });
 

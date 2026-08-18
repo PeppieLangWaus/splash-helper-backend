@@ -479,3 +479,79 @@ describe('Chat subscription (SUBSCRIBE_CHAT / UNSUBSCRIBE_CHAT)', () => {
     expect((ws as unknown as MockWebSocket).sent).toHaveLength(0);
   });
 });
+
+describe('Edited message correlation (RuneLite plugin resend for a resolved chat command)', () => {
+  // Fresh, effectively-unique community id per test — same reasoning as the subscription suite
+  // above: the chat ring buffer is module-level and never reset between tests.
+  let communityId: string;
+  beforeEach(() => {
+    communityId = `community-${Math.random()}`;
+  });
+
+  const source = { id: 42, timestamp: 1_700_000_000, type: 'FRIENDSCHAT' };
+
+  it('updates the matching buffered message in place instead of appending a new one', async () => {
+    broadcastChatMessage(communityId, 'fc', 'Zezima', 'ge price of a whip is <unresolved>', undefined, {
+      ...source,
+      edited: false,
+    });
+    broadcastChatMessage(communityId, 'fc', 'Zezima', 'ge price of a whip is 1,234,567', undefined, {
+      ...source,
+      edited: true,
+    });
+
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+    const msg = (ws as unknown as MockWebSocket).lastMessage();
+
+    // Still one buffered message — updated, not duplicated.
+    expect(msg.recent).toHaveLength(1);
+    expect(msg.recent[0]).toMatchObject({ sender: 'Zezima', message: 'ge price of a whip is 1,234,567', edited: true });
+  });
+
+  it('pushes a CHAT_MESSAGE_EDITED (not a second CHAT_MESSAGE) to an already-subscribed viewer', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+
+    broadcastChatMessage(communityId, 'fc', 'Zezima', 'original text', undefined, { ...source, edited: false });
+    broadcastChatMessage(communityId, 'fc', 'Zezima', 'resolved text', undefined, { ...source, edited: true });
+
+    expect((ws as unknown as MockWebSocket).sent).toHaveLength(3); // CHAT_SUBSCRIBED, CHAT_MESSAGE, CHAT_MESSAGE_EDITED
+    const edited = (ws as unknown as MockWebSocket).lastMessage();
+    expect(edited).toMatchObject({ type: 'CHAT_MESSAGE_EDITED', sender: 'Zezima', message: 'resolved text', edited: true });
+    // Same broadcast id as the original — so a viewer can find-and-replace rather than append.
+    const original = JSON.parse((ws as unknown as MockWebSocket).sent[1]);
+    expect(edited.id).toBe(original.id);
+  });
+
+  it('inserts as a normal new message when no original is found to correlate with', async () => {
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+
+    // No prior broadcast for this source — e.g. the original never arrived, or the service
+    // restarted in between.
+    broadcastChatMessage(communityId, 'fc', 'Zezima', 'resolved text, no original seen', undefined, {
+      ...source,
+      edited: true,
+    });
+
+    const msg = (ws as unknown as MockWebSocket).lastMessage();
+    expect(msg).toMatchObject({ type: 'CHAT_MESSAGE', message: 'resolved text, no original seen', edited: true });
+  });
+
+  it('does not correlate across different communities or channel types sharing the same source id', async () => {
+    broadcastChatMessage(communityId, 'fc', 'Zezima', 'original in fc', undefined, { ...source, edited: false });
+
+    // Same (id, timestamp, type) but a different channel — must not match the fc message above.
+    const ws = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(ws, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'cc' }));
+    broadcastChatMessage(communityId, 'cc', 'Zezima', 'resolved in cc', undefined, { ...source, edited: true });
+
+    const msg = (ws as unknown as MockWebSocket).lastMessage();
+    expect(msg).toMatchObject({ type: 'CHAT_MESSAGE', message: 'resolved in cc' }); // inserted, not merged into fc's buffer
+
+    const fcWs = new MockWebSocket() as unknown as WebSocket;
+    await handleMessage(fcWs, JSON.stringify({ type: 'SUBSCRIBE_CHAT', communityId, channelType: 'fc' }));
+    expect((fcWs as unknown as MockWebSocket).lastMessage().recent).toMatchObject([{ message: 'original in fc' }]);
+  });
+});

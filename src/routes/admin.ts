@@ -5,11 +5,16 @@ import { User } from '../models/User';
 import { ArchivedSession } from '../models/ArchivedSession';
 import { Community } from '../models/Community';
 import { SecurityEvent } from '../models/SecurityEvent';
+import { PasswordResetToken } from '../models/PasswordResetToken';
 import { assignDefaultRank } from '../services/ranks';
+import { generateToken } from '../utils/secureToken';
+import { sendPasswordResetEmail } from '../services/email';
 
 const router = Router();
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET ?? '';
+const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+const PASSWORD_RESET_EXPIRY_MS = 30 * 60 * 1000;
 
 // All routes require admin JWT
 router.use(requireAdmin);
@@ -33,6 +38,47 @@ router.get('/users', async (_req: Request, res: Response): Promise<void> => {
 router.get('/security-events', async (_req: Request, res: Response): Promise<void> => {
   const events = await SecurityEvent.find({}).sort({ createdAt: -1 }).lean();
   res.json({ events });
+});
+
+/**
+ * POST /api/admin/users/:username/send-reset-link
+ * Emails a password-reset link directly to the target user's verified email — the admin never
+ * sees or handles the raw link. Only works when the user has a verified email; there is
+ * deliberately no fallback for one who doesn't. No third party, including an admin, should ever
+ * hold a usable reset secret for someone else's account.
+ */
+router.post('/users/:username/send-reset-link', async (req: Request, res: Response): Promise<void> => {
+  const { username } = req.params;
+
+  const user = await User.findOne({ username });
+  if (!user) {
+    res.status(404).json({ error: `User "${username}" not found` });
+    return;
+  }
+
+  if (!user.email || !user.emailVerifiedAt) {
+    res.status(400).json({ error: 'User has no verified email to send a reset link to' });
+    return;
+  }
+
+  await PasswordResetToken.deleteMany({ userId: user._id });
+  const { raw, hash } = generateToken();
+  await PasswordResetToken.create({
+    userId: user._id,
+    tokenHash: hash,
+    expiresAt: new Date(Date.now() + PASSWORD_RESET_EXPIRY_MS),
+    requestedByAdmin: true,
+  });
+
+  await sendPasswordResetEmail(user.email, `${FRONTEND_URL}/reset-password?token=${raw}`);
+
+  await SecurityEvent.create({
+    type: 'admin-generated-reset-link',
+    adminUsername: req.user!.sub,
+    targetUsername: user.username,
+  });
+
+  res.json({ message: `Reset link sent to ${user.username}'s verified email.` });
 });
 
 /**

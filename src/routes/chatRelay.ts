@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { handleChatRelayPayload } from '../services/chatRelay';
 import { log, logWarn } from '../utils/logger';
+import { getClientIp } from '../utils/clientIp';
 
 const router = Router();
 
@@ -37,7 +38,7 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const sourceIp = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+  const sourceIp = getClientIp(req);
 
   // Logged unconditionally (not just on failure) — this endpoint's wire format is still
   // stabilizing against whatever the plugin actually sends, so seeing every payload as it

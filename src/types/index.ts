@@ -107,6 +107,15 @@ export interface WsAckResponse {
   type: 'ACK';
 }
 
+/** A real OSRS item id + quantity, resolved server-side via services/itemLogResolver.ts — never
+ *  derived from a client-local `<img=N>` chat tag (a per-viewer-session sprite index with no
+ *  relation to the real item id). Whether `quantity` is meaningful to actually display is
+ *  ChatBroadcastMessage.showQuantities' job, not a property of any individual item. */
+export interface ChatItemRef {
+  id: number;
+  quantity: number;
+}
+
 /** One chat-relay message, broadcast to every socket subscribed to this community+channel. */
 export interface ChatBroadcastMessage {
   id: string;
@@ -121,6 +130,30 @@ export interface ChatBroadcastMessage {
   rank?: number;
   rankName?: string;
   rankIconUrl?: string;
+  /** Present when this line was originally a `!log <page>`/`!log missing <page>`/`!pets` command
+   *  that resolved successfully — the real items it describes, resolved server-side via
+   *  services/itemLogResolver.ts. When present, `message` has *already* been replaced with a
+   *  clean summary built from the same resolution (e.g. "Cyclopes (8/8):"), in place of the raw
+   *  typed command or the plugin's own `<img=N>`-laden local rewrite — so a viewer that doesn't
+   *  render `items` at all still shows a sensible line, just without the icons. Absent for every
+   *  other message, and for one of these commands if resolution failed (unlinked account, unknown
+   *  page, upstream API error/timeout) — `message` is left as the original text in that case. */
+  items?: ChatItemRef[];
+  /** Whether a per-item `quantity` in `items` is meaningful to show (e.g. as "xN" next to its
+   *  icon) — true for a resolved collection-log page, false for resolved pets (RuneProfile still
+   *  reports a numeric quantity for those, but owning a pet isn't a "count"). Meaningless/absent
+   *  when `items` itself is absent. */
+  showQuantities?: boolean;
+  /** The plugin's own (id, timestamp, type) for this line — present whenever the relay could
+   *  extract them, and used solely to correlate a later `edited: true` resend with this message
+   *  (see websocket/chatBroadcast.ts). Not a stable/global identifier on its own: `sourceId`
+   *  alone is a small per-session counter from the game client, not unique across senders. */
+  sourceId?: number;
+  sourceTimestamp?: number;
+  sourceType?: string;
+  /** True once this message has been updated in place by an edited resend of a chat command that
+   *  resolved after it was first sent. */
+  edited?: boolean;
 }
 
 /** Acks a SUBSCRIBE_CHAT and backfills recent history (see chatBroadcast's ring buffer) so the
@@ -136,12 +169,20 @@ export interface WsChatMessageResponse extends ChatBroadcastMessage {
   type: 'CHAT_MESSAGE';
 }
 
+/** Sent instead of a second WsChatMessageResponse when an edited resend (see ChatBroadcastMessage
+ *  .edited) was correlated with a message already broadcast — same shape, so a viewer can update
+ *  the matching `id` in place rather than appending a duplicate line. */
+export interface WsChatMessageEditedResponse extends ChatBroadcastMessage {
+  type: 'CHAT_MESSAGE_EDITED';
+}
+
 export type WsOutgoingMessage =
   | WsAuthSuccessResponse
   | WsAuthFailureResponse
   | WsAckResponse
   | WsChatSubscribedResponse
-  | WsChatMessageResponse;
+  | WsChatMessageResponse
+  | WsChatMessageEditedResponse;
 
 // ── Active session state (in-memory) ────────────────────────────────────────
 
@@ -152,6 +193,10 @@ export interface ActiveSessionState {
   sessionData: SessionData | null;
   authenticated: boolean;
   lastUpdate: number;
+  /** When true, `sweepInactiveSessions` skips this session regardless of inactivity.
+   *  Only ever set via the dev view (see routes/dev.ts) for fake sessions that should
+   *  stick around without needing to be kept alive. */
+  pinned?: boolean;
 }
 
 // ── JWT payload ──────────────────────────────────────────────────────────────
@@ -160,6 +205,12 @@ export interface JwtPayload {
   sub: string;   // username
   isAdmin: boolean;
   communityEligible: boolean;
+  /** User.tokenVersion at the time this JWT was issued. requireAuth compares this against the
+   *  live value on the User document — bumping tokenVersion (e.g. on password reset) instantly
+   *  invalidates every JWT issued before the bump, even ones that haven't expired yet. Missing
+   *  on tokens minted before this field existed; treated as 0, matching User.tokenVersion's own
+   *  default, so already-issued tokens keep working unaffected. */
+  tv?: number;
   iat?: number;
   exp?: number;
 }

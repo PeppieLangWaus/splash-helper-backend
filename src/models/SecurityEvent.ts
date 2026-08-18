@@ -1,26 +1,34 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
-export type SecurityEventType = 'setup-unknown-community' | 'setup-token-mismatch';
+export type SecurityEventType = 'setup-unknown-community' | 'setup-token-mismatch' | 'admin-generated-reset-link';
 
-/** Audit trail for suspicious `/community-bot/verify-setup` attempts, so an admin can review
- *  who tried to pair a Discord server with a community they don't hold a valid token for.
- *  Deliberately never stores the raw token that was attempted. */
+/** Audit trail for security-sensitive actions worth a human review trail: suspicious
+ *  `/community-bot/verify-setup` attempts, and now admin-initiated password-reset links (see
+ *  routes/admin.ts). Deliberately never stores a raw secret/token. Discord-bot fields
+ *  (guildId/discordUserId/attemptedName) are optional since the admin-reset event type doesn't
+ *  have a Discord guild/user context — it has an admin + a target username instead. */
 export interface ISecurityEvent extends Document {
   type: SecurityEventType;
   communityId?: Types.ObjectId;
-  guildId: string;
-  discordUserId: string;
-  attemptedName: string;
+  guildId?: string;
+  discordUserId?: string;
+  attemptedName?: string;
+  /** Set only for type: 'admin-generated-reset-link' — the admin who triggered it. */
+  adminUsername?: string;
+  /** Set only for type: 'admin-generated-reset-link' — the account the link was sent for. */
+  targetUsername?: string;
   createdAt: Date;
 }
 
 const SecurityEventSchema = new Schema<ISecurityEvent>(
   {
-    type: { type: String, enum: ['setup-unknown-community', 'setup-token-mismatch'], required: true },
+    type: { type: String, enum: ['setup-unknown-community', 'setup-token-mismatch', 'admin-generated-reset-link'], required: true },
     communityId: { type: Schema.Types.ObjectId, ref: 'Community' },
-    guildId: { type: String, required: true },
-    discordUserId: { type: String, required: true },
-    attemptedName: { type: String, required: true },
+    guildId: { type: String },
+    discordUserId: { type: String },
+    attemptedName: { type: String },
+    adminUsername: { type: String },
+    targetUsername: { type: String },
   },
   { timestamps: { createdAt: 'createdAt', updatedAt: false } },
 );

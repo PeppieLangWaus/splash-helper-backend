@@ -20,6 +20,17 @@ export interface IUser extends Document {
    *  different communities — so lookups always scope by discordUserId *and* community
    *  membership rather than relying on this alone. */
   discordUserId?: string;
+  /** Optional, self-service — see routes/auth.ts's POST /auth/email. Unset for most existing
+   *  accounts, which keep working exactly as before; this is purely additive. */
+  email?: string;
+  /** Unset until the verification link is clicked. An email with no (or a stale) verification
+   *  is never eligible to receive a password-reset link — see routes/auth.ts. */
+  emailVerifiedAt?: Date;
+  /** Bumped on every password change. Embedded in every issued JWT (see types/index.ts's
+   *  JwtPayload.tv) so middleware/auth.ts's requireAuth can reject a token minted before the
+   *  bump — a password reset instantly invalidates every other active session, not just ones
+   *  that happen to expire naturally. */
+  tokenVersion: number;
   createdAt: Date;
 }
 
@@ -35,10 +46,17 @@ const UserSchema = new Schema<IUser>(
     discordHistoryWebhookUrl: { type: String },
     rankAssignments: { type: Map, of: Schema.Types.ObjectId },
     discordUserId: { type: String },
+    email: { type: String, trim: true, lowercase: true },
+    emailVerifiedAt: { type: Date },
+    tokenVersion: { type: Number, default: 0 },
   },
   { timestamps: { createdAt: 'createdAt', updatedAt: false } },
 );
 
 UserSchema.index({ discordUserId: 1 });
+// Sparse: most users have no email, and a sparse unique index only enforces uniqueness among
+// documents where the field is actually set — unlike a plain unique index, it doesn't collide
+// every emailless user against every other emailless user.
+UserSchema.index({ email: 1 }, { unique: true, sparse: true });
 
 export const User = mongoose.model<IUser>('User', UserSchema);

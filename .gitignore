@@ -141,11 +141,11 @@ vite.config.ts.timestamp-*
 test-data
 db.json
 .devdata/
-data/item-icons/
+data/
 
-# scripts/item-icons/ (offline icon renderer) build/scratch output
-scripts/item-icons/.gradle/
-scripts/item-icons/disk.zip
+# Gradle build/work output for scripts/item-icons (npm run render-item-icons) — the rendered
+# data/item-icons/*.png it produces is committed, this scratch output isn't.
 scripts/item-icons/work/
 scripts/item-icons/build/
 scripts/item-icons/bin/
+scripts/item-icons/.gradle/

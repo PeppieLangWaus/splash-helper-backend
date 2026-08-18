@@ -1,11 +1,16 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { timingSafeEqual } from 'crypto';
 import { User } from '../models/User';
 import { SetupLinkJwtPayload } from '../types';
 import { requireEnv } from '../config/env';
 import { rateLimit } from '../middleware/rateLimit';
+import { requireAuth } from '../middleware/auth';
+import { EmailVerificationToken } from '../models/EmailVerificationToken';
+import { PasswordResetToken } from '../models/PasswordResetToken';
+import { generateToken, hashToken } from '../utils/secureToken';
+import { sendVerificationEmail, sendEmailChangedNotice, sendPasswordResetEmail, sendPasswordChangedNotice } from '../services/email';
+import { getClientIp } from '../utils/clientIp';
 
 const router = Router();
 const JWT_SECRET = requireEnv('JWT_SECRET');
@@ -43,7 +48,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const payload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible };
+  const payload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible, tv: user.tokenVersion };
   const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
   res.json({ token, username: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible });
 });
@@ -91,50 +96,236 @@ router.post('/setup/:setupToken', async (req: Request, res: Response): Promise<v
   user.setupLinkUsed = true;
   await user.save();
 
-  const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible };
+  const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible, tv: user.tokenVersion };
   const token = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '7d' });
   res.json({ message: 'Account set up successfully', token, username: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible });
 });
 
-const resetPasswordLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_VERIFICATION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
-function tokensMatch(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
+const emailChangeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  keyFn: (req) => req.user?.sub ?? getClientIp(req),
+});
 
 /**
- * POST /auth/reset-password
- * Body: { username: string; token: string; newPassword: string }
- * The plugin-held sync token doubles as proof of account ownership, so a user who forgot
- * their web password (but still has their RuneLite token) can reset it without any email
- * infrastructure or admin intervention.
+ * POST /auth/email
+ * Body: { email: string; currentPassword: string }
+ * Attaches or replaces the caller's own email. Requires their current password as a second
+ * factor, so a stolen JWT alone can't plant a backdoor recovery address. Always resets
+ * emailVerifiedAt — even re-submitting the same address has to be re-verified — and sends a
+ * fresh verification link. If a different, already-verified email is being replaced, also
+ * notifies the old address, so a hijacker with temporary access can't quietly redirect recovery
+ * without the real owner noticing.
  */
-router.post('/reset-password', resetPasswordLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { username, token, newPassword } = req.body as { username?: string; token?: string; newPassword?: string };
+router.post('/email', requireAuth, emailChangeLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { email, currentPassword } = req.body as { email?: string; currentPassword?: string };
 
-  if (!username || !token || !newPassword) {
-    res.status(400).json({ error: 'username, token, and newPassword are required' });
+  if (!email || !currentPassword) {
+    res.status(400).json({ error: 'email and currentPassword are required' });
     return;
   }
 
-  if (newPassword.length < 8) {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!EMAIL_RE.test(normalizedEmail)) {
+    res.status(400).json({ error: 'Invalid email address' });
+    return;
+  }
+
+  const user = await User.findOne({ username: req.user!.sub });
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+
+  const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!valid) {
+    res.status(401).json({ error: 'Incorrect password' });
+    return;
+  }
+
+  const previousVerifiedEmail = user.emailVerifiedAt ? user.email : undefined;
+
+  user.email = normalizedEmail;
+  user.emailVerifiedAt = undefined;
+  try {
+    await user.save();
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && (err as { code?: number }).code === 11000) {
+      res.status(409).json({ error: 'That email is already in use on another account' });
+      return;
+    }
+    throw err;
+  }
+
+  await EmailVerificationToken.deleteMany({ userId: user._id });
+  const { raw, hash } = generateToken();
+  await EmailVerificationToken.create({
+    userId: user._id,
+    tokenHash: hash,
+    expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS),
+  });
+
+  await sendVerificationEmail(normalizedEmail, `${FRONTEND_URL}/verify-email?token=${raw}`);
+  if (previousVerifiedEmail && previousVerifiedEmail !== normalizedEmail) {
+    await sendEmailChangedNotice(previousVerifiedEmail);
+  }
+
+  res.json({ email: user.email, emailVerifiedAt: null, message: 'Verification email sent.' });
+});
+
+/**
+ * GET /auth/verify-email/:token
+ * Public — the token itself is the credential. Single use, 24h expiry.
+ */
+router.get('/verify-email/:token', async (req: Request, res: Response): Promise<void> => {
+  const { token } = req.params;
+  const record = await EmailVerificationToken.findOne({ tokenHash: hashToken(token), expiresAt: { $gt: new Date() } });
+  if (!record) {
+    res.status(400).json({ error: 'Invalid or expired link' });
+    return;
+  }
+
+  const user = await User.findById(record.userId);
+  if (!user) {
+    res.status(400).json({ error: 'Invalid or expired link' });
+    return;
+  }
+
+  user.emailVerifiedAt = new Date();
+  await user.save();
+  await EmailVerificationToken.deleteOne({ _id: record._id });
+
+  res.json({ message: 'Email verified.' });
+});
+
+const resendVerificationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  keyFn: (req) => req.user?.sub ?? getClientIp(req),
+});
+
+/**
+ * POST /auth/resend-verification
+ * Re-sends a verification link for the caller's already-attached, still-unverified email. No
+ * currentPassword needed — nothing about the account changes, this only resends.
+ */
+router.post('/resend-verification', requireAuth, resendVerificationLimiter, async (req: Request, res: Response): Promise<void> => {
+  const user = await User.findOne({ username: req.user!.sub });
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  if (!user.email) {
+    res.status(400).json({ error: 'No email on file to verify' });
+    return;
+  }
+  if (user.emailVerifiedAt) {
+    res.status(400).json({ error: 'Email is already verified' });
+    return;
+  }
+
+  await EmailVerificationToken.deleteMany({ userId: user._id });
+  const { raw, hash } = generateToken();
+  await EmailVerificationToken.create({
+    userId: user._id,
+    tokenHash: hash,
+    expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MS),
+  });
+
+  await sendVerificationEmail(user.email, `${FRONTEND_URL}/verify-email?token=${raw}`);
+  res.json({ message: 'Verification email sent.' });
+});
+
+const PASSWORD_RESET_EXPIRY_MS = 30 * 60 * 1000;
+
+const forgotPasswordIpLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+const forgotPasswordEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  keyFn: (req) => ((req.body as { email?: string }).email ?? 'unknown').trim().toLowerCase(),
+});
+
+/**
+ * POST /auth/forgot-password
+ * Body: { email: string }
+ * Always responds with the same generic message regardless of whether the address is
+ * registered or verified, to prevent account enumeration.
+ */
+router.post(
+  '/forgot-password',
+  forgotPasswordIpLimiter,
+  forgotPasswordEmailLimiter,
+  async (req: Request, res: Response): Promise<void> => {
+    const { email } = req.body as { email?: string };
+    const generic = { message: 'If that address is registered, a reset link has been sent.' };
+
+    if (!email) {
+      res.json(generic);
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await User.findOne({ email: normalizedEmail, emailVerifiedAt: { $ne: null } });
+    if (user) {
+      await PasswordResetToken.deleteMany({ userId: user._id });
+      const { raw, hash } = generateToken();
+      await PasswordResetToken.create({
+        userId: user._id,
+        tokenHash: hash,
+        expiresAt: new Date(Date.now() + PASSWORD_RESET_EXPIRY_MS),
+        requestedByAdmin: false,
+      });
+      await sendPasswordResetEmail(user.email!, `${FRONTEND_URL}/reset-password?token=${raw}`);
+    }
+
+    res.json(generic);
+  },
+);
+
+const resetPasswordTokenLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+
+/**
+ * POST /auth/reset-password/:token
+ * Body: { newPassword: string }
+ * The only way to reset a password now, aside from an admin-triggered email (see
+ * POST /admin/users/:username/send-reset-link) — replaces the sync-token route removed
+ * earlier on this branch. Bumps tokenVersion (invalidating every existing session) and clears
+ * every other outstanding reset token for the user as defense in depth.
+ */
+router.post('/reset-password/:token', resetPasswordTokenLimiter, async (req: Request, res: Response): Promise<void> => {
+  const { token } = req.params;
+  const { newPassword } = req.body as { newPassword?: string };
+
+  if (!newPassword || newPassword.length < 8) {
     res.status(400).json({ error: 'Password must be at least 8 characters' });
     return;
   }
 
-  const user = await User.findOne({ username });
-  if (!user || !tokensMatch(user.token, token)) {
-    res.status(401).json({ error: 'Invalid username or token' });
+  const record = await PasswordResetToken.findOne({ tokenHash: hashToken(token), expiresAt: { $gt: new Date() } });
+  if (!record) {
+    res.status(400).json({ error: 'Invalid or expired link' });
+    return;
+  }
+
+  const user = await User.findById(record.userId);
+  if (!user) {
+    res.status(400).json({ error: 'Invalid or expired link' });
     return;
   }
 
   user.passwordHash = await bcrypt.hash(newPassword, 12);
+  user.tokenVersion += 1;
   await user.save();
+  await PasswordResetToken.deleteMany({ userId: user._id });
 
-  const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible };
+  if (user.email && user.emailVerifiedAt) {
+    await sendPasswordChangedNotice(user.email);
+  }
+
+  const jwtPayload = { sub: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible, tv: user.tokenVersion };
   const jwtToken = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: '7d' });
   res.json({
     message: 'Password reset successfully',
