@@ -141,3 +141,11 @@ vite.config.ts.timestamp-*
 test-data
 db.json
 .devdata/
+data/item-icons/
+
+# scripts/item-icons/ (offline icon renderer) build/scratch output
+scripts/item-icons/.gradle/
+scripts/item-icons/disk.zip
+scripts/item-icons/work/
+scripts/item-icons/build/
+scripts/item-icons/bin/
