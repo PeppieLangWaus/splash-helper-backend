@@ -1,5 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import {
+  copyFileSync,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -21,8 +30,18 @@ import extractZip from 'extract-zip';
  *   npm run render-item-icons                          # latest live cache from OpenRS2
  *   npm run render-item-icons -- --cache-dir <path>     # skip download, render from an existing disk store
  *   npm run render-item-icons -- --ids 995,4151         # only these item IDs (fast smoke test)
+ *   npm run render-item-icons -- --build-cache <dir>    # see "Build cache" below
  *
  * Requires a JDK (11+, on PATH or via JAVA_HOME).
+ *
+ * ## Build cache
+ *
+ * `--build-cache <dir>` (used by the Dockerfile, via a BuildKit `--mount=type=cache`) skips the
+ * download + render entirely when OpenRS2's latest live cache id is the same one recorded in
+ * `<dir>/cache-version.txt` from a previous run, reusing the icons saved in `<dir>/icons/`
+ * instead. It only applies to a full "latest cache, every item" run — it's ignored if `--cache-dir`
+ * or `--ids` is also passed, since neither produces output safe to treat as a complete build-cache
+ * entry.
  */
 
 const OPENRS2_CACHES_URL = 'https://archive.openrs2.org/caches.json';
@@ -37,6 +56,7 @@ const argValue = (flag: string): string | null => {
 };
 const cacheDirArg = argValue('--cache-dir');
 const idsArg = argValue('--ids');
+const buildCacheArg = argValue('--build-cache');
 
 interface Openrs2Cache {
   id: number;
@@ -132,8 +152,67 @@ async function resolveCacheDir(): Promise<string> {
   return downloadCache(latest, WORK_DIR);
 }
 
+// The cache id (not the icons themselves) is what actually changes when OSRS ships an update, so
+// that's what's compared build-to-build; `<dir>/icons/` just carries the render that id produced.
+function readCachedCacheId(buildCacheDir: string): number | null {
+  const versionFile = path.join(buildCacheDir, 'cache-version.txt');
+  if (!existsSync(versionFile)) return null;
+  const id = Number(readFileSync(versionFile, 'utf8').trim());
+  return Number.isInteger(id) ? id : null;
+}
+
+function reuseFromBuildCache(buildCacheDir: string): number {
+  const savedIconsDir = path.join(buildCacheDir, 'icons');
+  if (!existsSync(savedIconsDir)) return 0;
+  mkdirSync(OUT_DIR, { recursive: true });
+  const files = readdirSync(savedIconsDir).filter((f) => /^\d+\.png$/.test(f));
+  for (const file of files) {
+    copyFileSync(path.join(savedIconsDir, file), path.join(OUT_DIR, file));
+  }
+  return files.length;
+}
+
+function saveToBuildCache(buildCacheDir: string, cacheId: number): void {
+  const savedIconsDir = path.join(buildCacheDir, 'icons');
+  rmSync(savedIconsDir, { recursive: true, force: true });
+  mkdirSync(savedIconsDir, { recursive: true });
+  const files = readdirSync(OUT_DIR).filter((f) => /^\d+\.png$/.test(f));
+  for (const file of files) {
+    copyFileSync(path.join(OUT_DIR, file), path.join(savedIconsDir, file));
+  }
+  writeFileSync(path.join(buildCacheDir, 'cache-version.txt'), String(cacheId));
+}
+
 async function main(): Promise<void> {
-  const cacheDir = await resolveCacheDir();
+  // When --build-cache applies, resolve the latest cache id up front so it can be compared
+  // against what's recorded from the last run before deciding whether to download anything at all.
+  let latestForBuildCache: Openrs2Cache | null = null;
+
+  if (buildCacheArg && !cacheDirArg && !idsArg) {
+    console.log('Finding the latest live cache on OpenRS2...');
+    const latest = await resolveLatestCache();
+    const cachedId = readCachedCacheId(buildCacheArg);
+
+    if (cachedId === latest.id) {
+      const count = reuseFromBuildCache(buildCacheArg);
+      if (count > 0) {
+        console.log(
+          `Cache ${latest.id} is unchanged since the last build — reusing ${count} icon${count === 1 ? '' : 's'} from the build cache, skipping download + render.`,
+        );
+        return;
+      }
+      console.log(`Build cache for cache ${latest.id} has no saved icons — rendering anyway.`);
+    } else {
+      console.log(
+        cachedId === null
+          ? 'No previous build-cache entry found — rendering from scratch.'
+          : `Cache changed since the last build (${cachedId} -> ${latest.id}) — rendering from scratch.`,
+      );
+    }
+    latestForBuildCache = latest;
+  }
+
+  const cacheDir = latestForBuildCache ? await downloadCache(latestForBuildCache, WORK_DIR) : await resolveCacheDir();
   const iconsDir = renderIcons(cacheDir);
 
   const count = copyIcons(iconsDir);
@@ -141,6 +220,11 @@ async function main(): Promise<void> {
     throw new Error(`No rendered icons found in ${iconsDir}`);
   }
   console.log(`Copied ${count} item icon${count === 1 ? '' : 's'} into ${OUT_DIR}`);
+
+  if (buildCacheArg && latestForBuildCache) {
+    saveToBuildCache(buildCacheArg, latestForBuildCache.id);
+    console.log(`Saved cache ${latestForBuildCache.id}'s icons into the build cache for future builds.`);
+  }
 }
 
 main().catch((error) => {
