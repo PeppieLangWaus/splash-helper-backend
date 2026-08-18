@@ -368,7 +368,9 @@ let sweepInProgress = false;
  * `maxAgeMs`. Requires the socket to actually be closed (not just quiet) so
  * that a still-connected session that's merely idle (e.g. banking, AFK) is
  * never archived out from under an active plugin — only SESSION_END or a
- * genuine disconnect-then-timeout should end a session.
+ * genuine disconnect-then-timeout should end a session. Sessions flagged
+ * `pinned` (dev-view fake sessions with auto-clear disabled) are skipped
+ * entirely — see routes/dev.ts.
  */
 export async function sweepInactiveSessions(maxAgeMs: number): Promise<void> {
   if (sweepInProgress) {
@@ -383,6 +385,7 @@ export async function sweepInactiveSessions(maxAgeMs: number): Promise<void> {
       (s) =>
         s.authenticated &&
         s.sessionData !== null &&
+        !s.pinned &&
         s.ws.readyState !== WebSocket.OPEN &&
         now - s.lastUpdate > maxAgeMs,
     );

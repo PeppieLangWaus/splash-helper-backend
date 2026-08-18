@@ -62,6 +62,7 @@ router.get('/', async (_req: Request, res: Response): Promise<void> => {
       username: s.username,
       sessionData: s.sessionData,
       lastUpdate: s.lastUpdate,
+      pinned: s.pinned ?? false,
       communities: memberCommunities.map((c) => ({
         communityId: c._id,
         communityName: c.name,
