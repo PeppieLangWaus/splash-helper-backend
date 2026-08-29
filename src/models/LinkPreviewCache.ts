@@ -1,7 +1,8 @@
 import mongoose, { Document, Schema } from 'mongoose';
 
 /**
- * Cached result of resolving one external link (OSRS Wiki article, Discord invite, ...) to
+ * Cached result of resolving one external link (OSRS Wiki article, Discord invite, RuneLite
+ * Plugin Hub listing, ...) to
  * preview data for the frontend's Discord-style hover tooltips (services/linkPreview.ts,
  * routes/linkPreview.ts). One document per `{ sourceType, key }` pair, self-expiring via the TTL
  * index below rather than ever being deleted explicitly — same pattern as
@@ -12,7 +13,7 @@ import mongoose, { Document, Schema } from 'mongoose';
  * every hover, while still self-healing quickly since negative entries get a much shorter TTL
  * (see NEGATIVE_TTL_MS in linkPreview.ts) than real ones.
  */
-export type LinkPreviewSourceType = 'wiki' | 'discord-invite';
+export type LinkPreviewSourceType = 'wiki' | 'discord-invite' | 'plugin-hub';
 
 export interface WikiPreviewData {
   title: string;
@@ -30,7 +31,16 @@ export interface DiscordInvitePreviewData {
   channelName?: string;
 }
 
-export type LinkPreviewData = WikiPreviewData | DiscordInvitePreviewData;
+export interface PluginHubPreviewData {
+  displayName: string;
+  author: string;
+  description?: string;
+  iconUrl?: string;
+  stars?: number;
+  repoUrl: string;
+}
+
+export type LinkPreviewData = WikiPreviewData | DiscordInvitePreviewData | PluginHubPreviewData;
 
 export interface ILinkPreviewCache extends Document {
   sourceType: LinkPreviewSourceType;
@@ -46,7 +56,7 @@ export interface ILinkPreviewCache extends Document {
 
 const LinkPreviewCacheSchema = new Schema<ILinkPreviewCache>(
   {
-    sourceType: { type: String, required: true, enum: ['wiki', 'discord-invite'] },
+    sourceType: { type: String, required: true, enum: ['wiki', 'discord-invite', 'plugin-hub'] },
     key: { type: String, required: true },
     found: { type: Boolean, required: true },
     data: { type: Schema.Types.Mixed },

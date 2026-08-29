@@ -10,6 +10,10 @@ function jsonResponse(status: number, body: unknown) {
   return { status, ok: status >= 200 && status < 300, json: async () => body };
 }
 
+function textResponse(status: number, body: string) {
+  return { status, ok: status >= 200 && status < 300, text: async () => body };
+}
+
 beforeAll(async () => {
   await connectTestDB();
 });
@@ -32,6 +36,12 @@ describe('getLinkPreview — unsupported URLs', () => {
 
   it('returns unsupported for a non-article wiki path', async () => {
     const result = await getLinkPreview('https://oldschool.runescape.wiki/robots.txt');
+    expect(result).toEqual({ type: 'unsupported' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns unsupported for the Plugin Hub listing page itself, not just a show/ page', async () => {
+    const result = await getLinkPreview('https://runelite.net/plugin-hub');
     expect(result).toEqual({ type: 'unsupported' });
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -136,5 +146,84 @@ describe('getLinkPreview — Discord invites', () => {
 
     const result = await getLinkPreview('https://discord.gg/deadinvite');
     expect(result).toEqual({ type: 'discord-invite', found: false });
+  });
+});
+
+describe('getLinkPreview — Plugin Hub listings', () => {
+  const propertiesBody = 'repository=https://github.com/Zoinkwiz/quest-helper.git\ncommit=94acc617e99fe8029ea62f9b8bceaf1ece0a75ea\n';
+  const githubRepoBody = {
+    description: 'A helper for questing',
+    stargazers_count: 42,
+    html_url: 'https://github.com/Zoinkwiz/quest-helper',
+    owner: { login: 'Zoinkwiz', avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4' },
+  };
+
+  it('resolves a known plugin via its GitHub repo', async () => {
+    fetchMock
+      .mockResolvedValueOnce(textResponse(200, propertiesBody))
+      .mockResolvedValueOnce(jsonResponse(200, githubRepoBody));
+
+    const result = await getLinkPreview('https://runelite.net/plugin-hub/show/quest-helper');
+    expect(result).toEqual({
+      type: 'plugin-hub',
+      found: true,
+      data: {
+        displayName: 'Quest Helper',
+        author: 'Zoinkwiz',
+        description: 'A helper for questing',
+        iconUrl: 'https://avatars.githubusercontent.com/u/1?v=4',
+        stars: 42,
+        repoUrl: 'https://github.com/Zoinkwiz/quest-helper',
+      },
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'https://raw.githubusercontent.com/runelite/plugin-hub/master/plugins/quest-helper',
+      expect.anything(),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://api.github.com/repos/Zoinkwiz/quest-helper',
+      expect.anything(),
+    );
+  });
+
+  it('treats an unknown plugin slug (404 properties file) as not found, without calling GitHub', async () => {
+    fetchMock.mockResolvedValueOnce(textResponse(404, '404: Not Found'));
+
+    const result = await getLinkPreview('https://runelite.net/plugin-hub/show/not-a-real-plugin');
+    expect(result).toEqual({ type: 'plugin-hub', found: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a disabled (pulled) plugin as not found', async () => {
+    fetchMock.mockResolvedValueOnce(
+      textResponse(200, 'repository=https://github.com/someone/removed-plugin.git\ncommit=abc\ndisabled=malware\n'),
+    );
+
+    const result = await getLinkPreview('https://runelite.net/plugin-hub/show/removed-plugin');
+    expect(result).toEqual({ type: 'plugin-hub', found: false });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a GitHub repo lookup failure (e.g. repo renamed/deleted) as not found', async () => {
+    fetchMock
+      .mockResolvedValueOnce(textResponse(200, propertiesBody))
+      .mockResolvedValueOnce(jsonResponse(404, { message: 'Not Found' }));
+
+    const result = await getLinkPreview('https://runelite.net/plugin-hub/show/quest-helper');
+    expect(result).toEqual({ type: 'plugin-hub', found: false });
+  });
+
+  it('caches a resolved plugin so a second lookup does not call fetch again', async () => {
+    fetchMock
+      .mockResolvedValueOnce(textResponse(200, propertiesBody))
+      .mockResolvedValueOnce(jsonResponse(200, githubRepoBody));
+
+    await getLinkPreview('https://runelite.net/plugin-hub/show/quest-helper');
+    await getLinkPreview('https://runelite.net/plugin-hub/show/quest-helper');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await LinkPreviewCache.countDocuments({ sourceType: 'plugin-hub', key: 'quest-helper' })).toBe(1);
   });
 });
