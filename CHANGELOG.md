@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-08-30
+### Fixed
+- Fix the server failing to start (`CannotCreateIndex`) because a Friends-Chat/Clan-Chat uniqueness index used a `$exists: false` filter that MongoDB rejects in partial indexes; it now uses an explicit synced flag instead, with a one-time migration to backfill it for existing communities.
+
 ## [1.1.0] - 2026-08-30
 ### Added
 - Register a community's Friends Chat by its owner's RSN instead of its in-game name, and self-heal the stored name from live chat traffic — a Friends Chat can now be renamed at any time without breaking the chat relay's classification.
