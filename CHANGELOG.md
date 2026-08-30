@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-30
+### Added
+- Register a community's Friends Chat by its owner's RSN instead of its in-game name, and self-heal the stored name from live chat traffic — a Friends Chat can now be renamed at any time without breaking the chat relay's classification.
+
 ## [1.0.2] - 2026-08-18
 ### Changed
 - Skip the Docker build's item-icon render step when OpenRS2's live game cache hasn't changed since the last build — a BuildKit-persisted build cache now reuses the previously-rendered icons instead of redownloading (~180MB) and re-rendering (~4000 icons) on every deploy.
