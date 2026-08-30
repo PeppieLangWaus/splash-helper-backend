@@ -97,7 +97,7 @@ describe('resolveChatBinding — Friends Chat classification', () => {
     });
   });
 
-  it('does not fall back to name matching for an FC that has already captured an owner', async () => {
+  it('still falls back to the current name for an already-migrated FC when the message carries no owner', async () => {
     const community = await Community.create({ name: 'Ardy Hosts', ownerIds: [new Types.ObjectId()], memberUserIds: [] });
     await ChatChannelName.create({
       communityId: community._id,
@@ -108,14 +108,35 @@ describe('resolveChatBinding — Friends Chat classification', () => {
       normalizedOwnerName: 'woox',
     });
 
-    // Same (now-stale) name, but claiming a different owner — must not resolve by the leftover
-    // name field once owner-based trust has taken over.
-    expect(await resolveChatBinding('Ardy Splash', 'fc', 'SomeoneElse')).toBeNull();
-    // No owner on the message at all.
-    expect(await resolveChatBinding('Ardy Splash', 'fc', undefined)).toBeNull();
+    // Owner is preferred, but a message that can't be matched by it (missing here) must not be
+    // dropped outright as long as the name it does carry is still the one on file — an owner
+    // hiccup on one message shouldn't blackhole an otherwise-recognizable FC.
+    expect(await resolveChatBinding('Ardy Splash', 'fc', undefined)).toEqual({
+      communityId: (community._id as Types.ObjectId).toString(),
+      channelType: 'fc',
+      matchedBy: 'name',
+    });
   });
 
-  it('still requires an exact owner match — a different owner claiming the same live name is unrecognized', async () => {
+  it('falls back to the current name when the message claims an owner that does not match what is on file', async () => {
+    const community = await Community.create({ name: 'Ardy Hosts', ownerIds: [new Types.ObjectId()], memberUserIds: [] });
+    await ChatChannelName.create({
+      communityId: community._id,
+      channelType: 'fc',
+      name: 'Ardy Splash',
+      normalizedName: 'ardy splash',
+      ownerName: 'Woox',
+      normalizedOwnerName: 'woox',
+    });
+
+    expect(await resolveChatBinding('Ardy Splash', 'fc', 'SomeoneElse')).toEqual({
+      communityId: (community._id as Types.ObjectId).toString(),
+      channelType: 'fc',
+      matchedBy: 'name',
+    });
+  });
+
+  it('is still unrecognized when neither the owner nor the name matches anything on file', async () => {
     await Community.create({ name: 'Ardy Hosts', ownerIds: [new Types.ObjectId()], memberUserIds: [] }).then((community) =>
       ChatChannelName.create({
         communityId: community._id,
@@ -125,6 +146,8 @@ describe('resolveChatBinding — Friends Chat classification', () => {
       }),
     );
 
+    // This doc has no name on file at all yet (owner-only registration, no message relayed) — a
+    // mismatched owner has nothing to fall back to.
     expect(await resolveChatBinding('Whatever Name', 'fc', 'Zezima')).toBeNull();
   });
 });
@@ -195,6 +218,34 @@ describe('handleChatRelayPayload — Friends Chat identity sync', () => {
     expect(doc?.normalizedName).toBe('brand new name');
     // The owner registration itself is untouched by a rename.
     expect(doc?.ownerName).toBe('Woox');
+  });
+
+  it('keeps forwarding a migrated FC\'s messages even when a later one carries no usable owner', async () => {
+    const community = await Community.create({ name: 'Ardy Hosts', ownerIds: [new Types.ObjectId()], memberUserIds: [] });
+    await ChatChannelName.create({
+      communityId: community._id,
+      channelType: 'fc',
+      name: 'Ardy Splash',
+      normalizedName: 'ardy splash',
+      ownerName: 'Woox',
+      normalizedOwnerName: 'woox',
+    });
+
+    // First message matches by owner and (re-)confirms the name — the "it sets the name
+    // correctly" half of the reported bug.
+    const first = await handleChatRelayPayload(makeFullModeMessage(), '1.2.3.4');
+    expect(first).toEqual({ status: 'forwarded', communityId: (community._id as Types.ObjectId).toString(), channelType: 'fc' });
+
+    // A later message from the same, still-correctly-named FC that for whatever reason doesn't
+    // carry an owner value must still be recognized via the name fallback, not dropped.
+    const second = await handleChatRelayPayload(
+      makeFullModeMessage({
+        message: { id: 2, timestamp: 1_700_000_100, type: 'FRIENDSCHAT', text: 'still here' },
+        friendsChat: { name: 'Ardy Splash' },
+      }),
+      '1.2.3.4',
+    );
+    expect(second).toEqual({ status: 'forwarded', communityId: (community._id as Types.ObjectId).toString(), channelType: 'fc' });
   });
 
   it('a community registered by owner only (no message relayed yet) has no name until one arrives', async () => {

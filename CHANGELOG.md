@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-08-31
+### Fixed
+- Stop dropping a migrated Friends Chat's messages whenever one doesn't carry a usable owner value — the chat relay now falls back to matching by the FC's current (self-healed) name instead of requiring an exact owner match on every single message.
+
 ## [1.1.1] - 2026-08-30
 ### Fixed
 - Fix the server failing to start (`CannotCreateIndex`) because a Friends-Chat/Clan-Chat uniqueness index used a `$exists: false` filter that MongoDB rejects in partial indexes; it now uses an explicit synced flag instead, with a one-time migration to backfill it for existing communities.
