@@ -13,8 +13,10 @@ import { resolveIdField, resolveIdListField } from '../services/discordIds';
 import { getOrCreateDefaultRank, setMemberRank, assignDefaultRank, getMapEntry } from '../services/ranks';
 import {
   resolveChatChannelNameField,
+  resolveChatChannelOwnerField,
   resolveDisplayNameField,
   applyChatChannelNameUpdate,
+  applyChatChannelOwnerUpdate,
   getRecentChatSources,
 } from '../services/chatRelay';
 import { ChatChannelName } from '../models/ChatChannelName';
@@ -464,8 +466,11 @@ router.put('/:communityId/discord-invite', async (req: Request, res: Response): 
 
 /**
  * GET /api/communities/:communityId/chat-config
- * Returns this community's registered Friends/Clan Chat names and chat Discord webhook — the
+ * Returns this community's registered Friends/Clan Chat identity and chat Discord webhook — the
  * settings that drive the global chat.splasher.help / chat.ardy.host relay (services/chatRelay.ts).
+ * `friendsChatOwner` is what's actually registered for Friends Chat (see ChatChannelName's doc
+ * comment for why); `friendsChatName` is read-only — the FC's current in-game name, kept in sync
+ * from live chat traffic rather than settable here, and null until its first message arrives.
  * Owner or admin only.
  */
 router.get('/:communityId/chat-config', async (req: Request, res: Response): Promise<void> => {
@@ -473,9 +478,11 @@ router.get('/:communityId/chat-config', async (req: Request, res: Response): Pro
   if (!community) return;
 
   const names = await ChatChannelName.find({ communityId: community._id }).lean();
+  const fc = names.find((n) => n.channelType === 'fc');
   res.json({
-    friendsChatName: names.find((n) => n.channelType === 'fc')?.name ?? null,
-    friendsChatDisplayName: names.find((n) => n.channelType === 'fc')?.displayName ?? null,
+    friendsChatOwner: fc?.ownerName ?? null,
+    friendsChatName: fc?.name ?? null,
+    friendsChatDisplayName: fc?.displayName ?? null,
     clanChatName: names.find((n) => n.channelType === 'cc')?.name ?? null,
     discordFriendsChatWebhookUrl: community.discordFriendsChatWebhookUrl ?? null,
     discordClanChatWebhookUrl: community.discordClanChatWebhookUrl ?? null,
@@ -484,25 +491,28 @@ router.get('/:communityId/chat-config', async (req: Request, res: Response): Pro
 
 /**
  * PUT /api/communities/:communityId/chat-config
- * Body: { friendsChatName?, friendsChatDisplayName?, clanChatName?, discordFriendsChatWebhookUrl?,
+ * Body: { friendsChatOwner?, friendsChatDisplayName?, clanChatName?, discordFriendsChatWebhookUrl?,
  *          discordClanChatWebhookUrl?: string | null }
- * Registers this community's Friends/Clan Chat names (each must be globally unique — see
- * ChatChannelName), the Friends Chat's cosmetic display name, and/or its two chat-relay Discord
- * webhooks. Any field may be omitted to leave it unchanged; an empty string clears it. Owner or
- * admin only.
+ * Registers this community's Friends Chat by its **owner's RSN** and/or its Clan Chat by name
+ * (each must be globally unique — see ChatChannelName), the Friends Chat's cosmetic display name,
+ * and/or its two chat-relay Discord webhooks. Any field may be omitted to leave it unchanged; an
+ * empty string clears it. `friendsChatOwner`, not a chat name, is the Friends Chat trust anchor —
+ * an FC's in-game name can be renamed by its owner at any time, so it's no longer something this
+ * route accepts; the current name is synced automatically from live chat traffic instead (see
+ * chatRelay.ts's syncFriendsChatIdentity) and only readable via GET. Owner or admin only.
  */
 router.put('/:communityId/chat-config', async (req: Request, res: Response): Promise<void> => {
   const community = await loadOwnedCommunity(req, res);
   if (!community) return;
 
   const {
-    friendsChatName,
+    friendsChatOwner,
     friendsChatDisplayName,
     clanChatName,
     discordFriendsChatWebhookUrl,
     discordClanChatWebhookUrl,
   } = req.body as {
-    friendsChatName?: unknown;
+    friendsChatOwner?: unknown;
     friendsChatDisplayName?: unknown;
     clanChatName?: unknown;
     discordFriendsChatWebhookUrl?: unknown;
@@ -510,24 +520,24 @@ router.put('/:communityId/chat-config', async (req: Request, res: Response): Pro
   };
 
   const communityId = community._id as Types.ObjectId;
-  const [friendsUpdate, clanUpdate] = await Promise.all([
-    resolveChatChannelNameField(friendsChatName, communityId, 'fc'),
+  const [friendsOwnerUpdate, clanUpdate] = await Promise.all([
+    resolveChatChannelOwnerField(friendsChatOwner, communityId),
     resolveChatChannelNameField(clanChatName, communityId, 'cc'),
   ]);
   const displayNameUpdate = resolveDisplayNameField(friendsChatDisplayName);
   const friendsWebhookUpdate = resolveWebhookField(discordFriendsChatWebhookUrl);
   const clanWebhookUpdate = resolveWebhookField(discordClanChatWebhookUrl);
 
-  if (friendsUpdate.action === 'invalid' || clanUpdate.action === 'invalid') {
-    res.status(400).json({ error: 'Chat names must be non-empty strings under 100 characters' });
+  if (friendsOwnerUpdate.action === 'invalid' || clanUpdate.action === 'invalid') {
+    res.status(400).json({ error: 'Chat owner/name must be a non-empty string under 100 characters' });
     return;
   }
   if (displayNameUpdate.action === 'invalid') {
     res.status(400).json({ error: 'Display name must be a non-empty string under 100 characters' });
     return;
   }
-  if (friendsUpdate.action === 'taken') {
-    res.status(409).json({ error: 'That Friends Chat name is already registered to another community' });
+  if (friendsOwnerUpdate.action === 'taken') {
+    res.status(409).json({ error: 'That Friends Chat owner is already registered to another community' });
     return;
   }
   if (clanUpdate.action === 'taken') {
@@ -540,7 +550,7 @@ router.put('/:communityId/chat-config', async (req: Request, res: Response): Pro
   }
 
   await Promise.all([
-    applyChatChannelNameUpdate(communityId, 'fc', friendsUpdate, displayNameUpdate),
+    applyChatChannelOwnerUpdate(communityId, friendsOwnerUpdate, displayNameUpdate),
     applyChatChannelNameUpdate(communityId, 'cc', clanUpdate),
   ]);
 
@@ -551,9 +561,11 @@ router.put('/:communityId/chat-config', async (req: Request, res: Response): Pro
   await community.save();
 
   const names = await ChatChannelName.find({ communityId }).lean();
+  const fc = names.find((n) => n.channelType === 'fc');
   res.json({
-    friendsChatName: names.find((n) => n.channelType === 'fc')?.name ?? null,
-    friendsChatDisplayName: names.find((n) => n.channelType === 'fc')?.displayName ?? null,
+    friendsChatOwner: fc?.ownerName ?? null,
+    friendsChatName: fc?.name ?? null,
+    friendsChatDisplayName: fc?.displayName ?? null,
     clanChatName: names.find((n) => n.channelType === 'cc')?.name ?? null,
     discordFriendsChatWebhookUrl: community.discordFriendsChatWebhookUrl ?? null,
     discordClanChatWebhookUrl: community.discordClanChatWebhookUrl ?? null,
