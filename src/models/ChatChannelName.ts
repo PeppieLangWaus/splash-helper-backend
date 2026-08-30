@@ -30,6 +30,14 @@ export interface IChatChannelName extends Document {
    *  opportunistically captures it off the first relayed message that still matches by name. */
   ownerName?: string;
   normalizedOwnerName?: string;
+  /** Mirrors "this doc has no `ownerName`" as a plain equality-friendly flag — `true` while a doc
+   *  is still trusted by name, unset/`false` once `ownerName` is captured. Exists only because
+   *  MongoDB's `partialFilterExpression` rejects `$exists: false` (it's implemented via `$not`,
+   *  which partial indexes don't support — see the `normalizedName_1_channelType_1` index below);
+   *  `{ nameTrustEligible: true }` is a plain equality clause it does accept, and is kept in sync
+   *  everywhere `ownerName` gets set. Never read directly outside that index — `ownerName`
+   *  presence/absence remains the actual source of truth. */
+  nameTrustEligible?: boolean;
   /** Owner-chosen display name shown in the chatbox instead of `name` — mainly for Friends Chat,
    *  whose in-game name is inherently tied to the owner's RSN (see point 4 in the chatbox
    *  feature notes). Optional; unset falls back to `name` wherever it's shown. No uniqueness
@@ -47,6 +55,7 @@ const ChatChannelNameSchema = new Schema<IChatChannelName>(
     normalizedName: { type: String },
     ownerName: { type: String, trim: true },
     normalizedOwnerName: { type: String },
+    nameTrustEligible: { type: Boolean },
     displayName: { type: String, trim: true },
   },
   { timestamps: true },
@@ -60,9 +69,12 @@ const ChatChannelNameSchema = new Schema<IChatChannelName>(
 // FC name. Deliberately *not* unique on normalizedName alone: Friends Chats and Clan Chats are
 // separate in-game namespaces, so an FC and a CC legitimately can share a name (even across two
 // different communities) without colliding.
+// Filters on `nameTrustEligible: true` rather than `ownerName: { $exists: false }` — see that
+// field's doc comment on the interface above for why the direct `$exists: false` form isn't legal
+// here.
 ChatChannelNameSchema.index(
   { normalizedName: 1, channelType: 1 },
-  { unique: true, partialFilterExpression: { normalizedName: { $exists: true }, ownerName: { $exists: false } } },
+  { unique: true, partialFilterExpression: { normalizedName: { $exists: true }, nameTrustEligible: true } },
 );
 // The Friends Chat trust anchor once captured (see interface doc comment) — a given owner RSN can
 // only ever point at one community's FC registration.
@@ -85,8 +97,18 @@ export const ChatChannelName = mongoose.model<IChatChannelName>('ChatChannelName
  * newly declared in the schema; it never drops or redefines ones the schema no longer matches
  * exactly, so a stale index would otherwise linger forever. `syncIndexes()` is a no-op once this
  * has already run.
+ *
+ * Backfills `nameTrustEligible` first: any doc written before that field existed has a
+ * `normalizedName` but no `ownerName` and no `nameTrustEligible` yet, so without this the partial
+ * index above would silently exclude it (equality against `true` doesn't match a missing field)
+ * until its next unrelated write — leaving it able to collide with another community's name in
+ * the meantime.
  */
 export async function syncChatChannelNameIndexes(): Promise<void> {
+  await ChatChannelName.updateMany(
+    { normalizedName: { $exists: true }, ownerName: { $exists: false }, nameTrustEligible: { $ne: true } },
+    { $set: { nameTrustEligible: true } },
+  );
   await ChatChannelName.syncIndexes();
 }
 

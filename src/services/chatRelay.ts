@@ -275,6 +275,10 @@ async function syncFriendsChatIdentity(
           $set: {
             ownerName: parsed.chatOwner,
             normalizedOwnerName: normalizeChatChannelName(parsed.chatOwner),
+            // Leaving name-trust behind now that an owner is on file — see ChatChannelName's
+            // `nameTrustEligible` doc comment for why this has to be an explicit flag flip rather
+            // than just the presence of `ownerName`.
+            nameTrustEligible: false,
           },
         },
       );
@@ -533,6 +537,10 @@ export async function applyChatChannelNameUpdate(
   if (update.action === 'set') {
     set.name = update.value;
     set.normalizedName = normalizeChatChannelName(update.value);
+    // This path is CC-only in practice (see this function's doc comment) — a CC doc never has an
+    // `ownerName`, so it's always name-trust eligible. See ChatChannelName's `nameTrustEligible`
+    // doc comment for why this has to be an explicit flag rather than derived from `ownerName`.
+    set.nameTrustEligible = true;
   }
   if (displayNameUpdate.action === 'set') set.displayName = displayNameUpdate.value;
   else if (displayNameUpdate.action === 'clear') unset.displayName = '';
@@ -614,6 +622,10 @@ export async function applyChatChannelOwnerUpdate(
   if (update.action === 'set') {
     set.ownerName = update.value;
     set.normalizedOwnerName = normalizeChatChannelName(update.value);
+    // An owner is now on file, so this doc leaves name-trust behind (see ChatChannelName's
+    // `nameTrustEligible` doc comment for why this has to be an explicit flag flip rather than
+    // just the presence of `ownerName`).
+    set.nameTrustEligible = false;
   }
   if (displayNameUpdate.action === 'set') set.displayName = displayNameUpdate.value;
   else if (displayNameUpdate.action === 'clear') unset.displayName = '';
