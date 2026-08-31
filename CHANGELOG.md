@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-08-31
+### Fixed
+- Add a WebSocket ping/pong heartbeat so connections silently killed by an idle reverse-proxy timeout are detected and closed cleanly, instead of sitting dead until the client's own reconnect logic eventually notices.
+
 ## [1.1.2] - 2026-08-31
 ### Fixed
 - Stop dropping a migrated Friends Chat's messages whenever one doesn't carry a usable owner value — the chat relay now falls back to matching by the FC's current (self-healed) name instead of requiring an exact owner match on every single message.
