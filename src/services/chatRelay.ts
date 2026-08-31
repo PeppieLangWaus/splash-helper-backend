@@ -176,8 +176,9 @@ const CACHE_TTL_MS = process.env.CHAT_RELAY_CACHE_TTL_MS !== undefined
 // Keyed by `${channelType}|${normalizedName}` rather than name alone — FC and CC are separate
 // in-game namespaces, so the same name can legitimately be registered as both at once (even to
 // different communities); collapsing them onto one key would make one silently shadow the other.
-// Only holds 'cc' entries plus any 'fc' entries not yet captured onto owner-based trust (see
-// ChatChannelName's doc comment) — a captured 'fc' entry lives in `ownerBindingCache` instead.
+// Holds every doc that currently has a `normalizedName` on file, 'fc' and 'cc' alike, regardless of
+// whether an 'fc' doc has *also* captured an owner — see resolveChatBinding for why an owner-
+// captured FC still needs this as a fallback, not just `ownerBindingCache`.
 let bindingCache = new Map<string, ChannelBinding>();
 // Friends-Chat-only: keyed by normalizedOwnerName alone (owner is a single global namespace,
 // unlike name which is scoped per channelType).
@@ -202,9 +203,13 @@ async function refreshBindingCacheIfStale(): Promise<void> {
     const nextOwnerBindingCache = new Map<string, ChannelBinding>();
     for (const e of entries) {
       const binding: ChannelBinding = { communityId: e.communityId.toString(), channelType: e.channelType };
+      // Not mutually exclusive: an FC that has captured an owner keeps its (self-healed) name in
+      // `bindingCache` too, as a fallback for a message that doesn't carry a usable `chatOwner` —
+      // see resolveChatBinding.
       if (e.channelType === 'fc' && e.normalizedOwnerName) {
         nextOwnerBindingCache.set(e.normalizedOwnerName, binding);
-      } else if (e.normalizedName) {
+      }
+      if (e.normalizedName) {
         nextBindingCache.set(bindingCacheKey(e.normalizedName, e.channelType), binding);
       }
     }
@@ -220,8 +225,12 @@ async function refreshBindingCacheIfStale(): Promise<void> {
  * community currently claims it. A Friends Chat message with a `chatOwner` is matched against that
  * owner first — the trust anchor for any FC that has one on file, since (unlike its name) an
  * owner's RSN doesn't change when they rename the chat — falling back to matching by `chatName`
- * only for an FC that hasn't captured an owner yet (or a message that didn't carry one). Clan Chat
- * is always matched by name.
+ * whenever the owner check doesn't hit: an FC that hasn't captured an owner yet, a message that
+ * didn't carry one, or (deliberately tolerated) one whose `chatOwner` doesn't match what's on file
+ * for some other reason. The name fallback still works for an owner-captured FC too, as long as
+ * its self-healed `name` is current — owner is preferred when available, but never the *only* way
+ * in, since an FC that stops resolving at all is worse than one that's briefly reachable by a
+ * slightly-behind name. Clan Chat is always matched by name.
  */
 export async function resolveChatBinding(
   chatName: string,
