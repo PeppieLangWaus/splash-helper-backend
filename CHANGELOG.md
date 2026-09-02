@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-02
+### Added
+- Log requests the API rejected outright (unmatched routes, malformed/oversized JSON bodies) as a structured JSON line on stdout, with method, path, client IP, and sanitized headers/body -- so exploit-scanner traffic shows up in Axiom (via Coolify's log drain) instead of silently 404ing with no trace. Caps how many lines a single IP can generate per minute so one aggressive scanner can't flood the logs.
+
 ## [1.1.3] - 2026-08-31
 ### Fixed
 - Add a WebSocket ping/pong heartbeat so connections silently killed by an idle reverse-proxy timeout are detected and closed cleanly, instead of sitting dead until the client's own reconnect logic eventually notices.
