@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-09-02
+### Changed
+- Move item-icon rendering out of the Docker image build and into a weekly GitHub Actions workflow that publishes a release asset — the build no longer needs a JDK/Gradle or a live OpenRS2 cache download, fixing deploys that failed or ran for hours when that step's BuildKit cache mount didn't survive between redeploys.
+
 ## [1.1.3] - 2026-08-31
 ### Fixed
 - Add a WebSocket ping/pong heartbeat so connections silently killed by an idle reverse-proxy timeout are detected and closed cleanly, instead of sitting dead until the client's own reconnect logic eventually notices.
