@@ -15,6 +15,7 @@ import chatRelayRouter from './routes/chatRelay';
 import chatChannelsRouter from './routes/chatChannels';
 import itemsRouter from './routes/items';
 import devRouter from './routes/dev';
+import { notFoundLogger, invalidBodyLogger } from './middleware/invalidRequestLogger';
 import { attachWebSocketServer } from './websocket/server';
 import { sweepInactiveSessions } from './websocket/handlers';
 
@@ -40,7 +41,14 @@ const allowedOrigins = (process.env.CORS_ORIGIN_API ?? process.env.CORS_ORIGIN_W
 app.use(cors({
   origin: allowedOrigins,
 }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  // Stashes the raw body text before parsing, so invalidRequestLogger can still record what a
+  // scanner sent even when it's not valid JSON (req.body is never populated in that case).
+  verify: (req, _res, buf) => {
+    (req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8').slice(0, 2000);
+  },
+}));
 
 app.use('/splashers', splashersRouter);
 app.use('/sessions', sessionsRouter);
@@ -59,6 +67,11 @@ if (process.env.NODE_ENV !== 'production') {
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
+
+// Must come after every route above: logs+responds to anything that didn't match a real route
+// (mostly exploit-scanner probes) or that sent a body express.json() couldn't parse.
+app.use(notFoundLogger);
+app.use(invalidBodyLogger);
 
 const httpServer = http.createServer(app);
 attachWebSocketServer(httpServer);
