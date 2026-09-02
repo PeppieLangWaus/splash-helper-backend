@@ -8,6 +8,10 @@ All notable changes to this project are documented in this file.
 ### Added
 - Log requests the API rejected outright (unmatched routes, malformed/oversized JSON bodies) as a structured JSON line on stdout, with method, path, client IP, and sanitized headers/body -- so exploit-scanner traffic shows up in Axiom (via Coolify's log drain) instead of silently 404ing with no trace. Caps how many lines a single IP can generate per minute so one aggressive scanner can't flood the logs.
 
+## [1.1.4] - 2026-09-02
+### Changed
+- Move item-icon rendering out of the Docker image build and into a weekly GitHub Actions workflow that publishes a release asset — the build no longer needs a JDK/Gradle or a live OpenRS2 cache download, fixing deploys that failed or ran for hours when that step's BuildKit cache mount didn't survive between redeploys.
+
 ## [1.1.3] - 2026-08-31
 ### Fixed
 - Add a WebSocket ping/pong heartbeat so connections silently killed by an idle reverse-proxy timeout are detected and closed cleanly, instead of sitting dead until the client's own reconnect logic eventually notices.

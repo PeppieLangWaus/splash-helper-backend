@@ -11,13 +11,20 @@ Not run directly — see `../render-item-icons.ts` (`npm run render-item-icons` 
 which downloads a cache from [OpenRS2](https://archive.openrs2.org), invokes this via Gradle, and
 copies the results into `../../data/item-icons/`, which `src/routes/items.ts` serves from.
 
+In production this runs on a schedule via `.github/workflows/render-item-icons.yml`, which
+publishes the rendered set as this repo's `item-icons-latest` GitHub Release asset; the Dockerfile
+fetches that asset pre-rendered rather than running this at image-build time (see the comment
+above the `ADD` in the Dockerfile for why). To force a fresh render outside the weekly schedule
+(e.g. right after an OSRS update), run that workflow manually from the Actions tab.
+
 ## What's different from RuneProfile's version
 
 - No `DumpHiscoreIcons`/`DumpClanRankIcons` — this repo's FC/CC rank icons already come from the
   OSRS Wiki (`src/services/rankIcons.ts`), so there's nothing here that needs the `net.runelite:client`
   dependency those pull in.
 - No R2/CDN upload or MD5-diffing — icons are copied straight into this repo's own `data/item-icons/`
-  and served by the Node app itself, committed like the rest of the repo's static test data.
+  and served by the Node app itself. `data/` is gitignored (thousands of generated PNGs don't
+  belong in git history); the rendered set instead ships as a GitHub Release asset (see above).
 - No collection-log sprite-atlas compositing — that's specific to RuneProfile's collection log page.
 - No brightness/gamma customization (RuneProfile's `BrightnessItemSpriteFactory`) — stock
   `net.runelite.cache.item.ItemSpriteFactory` visually matched RuneProfile's icons closely enough
