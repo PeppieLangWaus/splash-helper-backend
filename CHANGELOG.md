@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-09-04
+### Changed
+- Log SESSION_UPDATE at most once a minute per connection, and without its raw content preview — it fires every ~10s for an actively-splashing session and is always post-AUTH (never scanner-relevant), so logging every one at full detail was drowning out everything else once real traffic picked up.
+
 ## [1.2.4] - 2026-09-04
 ### Changed
 - Log a redacted preview of each WS message's actual content (previously just its type/username), and log non-JSON messages at all instead of silently swallowing them — surfaces what a spoofed-User-Agent scanner is actually sending, not just that it connected. Tokens/passwords are always redacted before logging, and a connection is capped at 20 logged message bodies so a flooding client can't blow up log volume.

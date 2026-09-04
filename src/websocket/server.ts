@@ -61,6 +61,17 @@ function redactedPreview(parsed: unknown): string {
  *  naturally on reconnect, which is fine since a fresh connection is a fresh thing to inspect. */
 const MAX_LOGGED_MESSAGES_PER_CONNECTION = 20;
 
+/**
+ * SESSION_UPDATE fires every ~10s for an actively-splashing session (see the plugin's
+ * UPDATE_THROTTLE_MS), so logging every one at full detail — or even just its compact
+ * type/username line — drowns out everything else on a server with a handful of concurrent
+ * splashers. It's also always post-AUTH (see handlers.ts's auth gate), so unlike every other
+ * message type here it can never be scanner-relevant: there's no forensic reason to see its
+ * content, only a coarse "is this session still alive" one. Logged at most this often per
+ * connection instead of every message, and never with a raw content preview.
+ */
+const SESSION_UPDATE_LOG_INTERVAL_MS = 60_000;
+
 export function attachWebSocketServer(httpServer: Server): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer });
 
@@ -104,6 +115,7 @@ export function attachWebSocketServer(httpServer: Server): WebSocketServer {
 
     let sentFirstMessage = false;
     let loggedMessageCount = 0;
+    let lastSessionUpdateLoggedAt = 0;
     const graceTimer = setTimeout(() => {
       if (sentFirstMessage || ws.readyState !== WebSocket.OPEN) return;
       log(`WS closing ${ip}: no message sent within ${FIRST_MESSAGE_GRACE_MS}ms of connecting`);
@@ -112,8 +124,6 @@ export function attachWebSocketServer(httpServer: Server): WebSocketServer {
 
     ws.on('message', (data) => {
       const raw = data.toString();
-      loggedMessageCount++;
-      const overBudget = loggedMessageCount > MAX_LOGGED_MESSAGES_PER_CONNECTION;
 
       try {
         const parsed = JSON.parse(raw);
@@ -125,23 +135,40 @@ export function attachWebSocketServer(httpServer: Server): WebSocketServer {
           sentFirstMessage = true;
           clearTimeout(graceTimer);
         }
-        const username = parsed.username ?? parsed.sessionData?.playerName ?? '?';
-        // SUBSCRIBE_CHAT carries no username (it's the frontend's anonymous chat viewer, not an
-        // authenticated splasher) — log what it's actually subscribing to instead, so this line
-        // says *something* rather than just "username=?" for every chat-viewer connection.
-        const target = parsed.type === 'SUBSCRIBE_CHAT'
-          ? ` communityId=${oneLine(parsed.communityId)} channelType=${oneLine(parsed.channelType)}`
-          : '';
-        // Full (redacted) payload alongside the summary fields above — e.g. a spoofed-UA scanner
-        // sending a bogus AUTH or garbage SESSION_* shape shows up here in full, not just its type.
-        const preview = overBudget ? '' : ` raw=${redactedPreview(parsed)}`;
-        log(`WS message: type=${parsed.type} username=${username}${target}${preview}`);
+
+        if (parsed?.type === 'SESSION_UPDATE') {
+          // Doesn't touch loggedMessageCount/the raw-preview budget below — see
+          // SESSION_UPDATE_LOG_INTERVAL_MS's doc comment for why this gets its own, much coarser
+          // treatment instead of sharing the general path every other message type goes through.
+          const now = Date.now();
+          if (now - lastSessionUpdateLoggedAt >= SESSION_UPDATE_LOG_INTERVAL_MS) {
+            lastSessionUpdateLoggedAt = now;
+            log(`WS message: type=SESSION_UPDATE username=${parsed.sessionData?.playerName ?? '?'} (logged at most every ${SESSION_UPDATE_LOG_INTERVAL_MS / 1000}s)`);
+          }
+        } else {
+          loggedMessageCount++;
+          const overBudget = loggedMessageCount > MAX_LOGGED_MESSAGES_PER_CONNECTION;
+          const username = parsed.username ?? parsed.sessionData?.playerName ?? '?';
+          // SUBSCRIBE_CHAT carries no username (it's the frontend's anonymous chat viewer, not an
+          // authenticated splasher) — log what it's actually subscribing to instead, so this line
+          // says *something* rather than just "username=?" for every chat-viewer connection.
+          const target = parsed.type === 'SUBSCRIBE_CHAT'
+            ? ` communityId=${oneLine(parsed.communityId)} channelType=${oneLine(parsed.channelType)}`
+            : '';
+          // Full (redacted) payload alongside the summary fields above — e.g. a spoofed-UA
+          // scanner sending a bogus AUTH or garbage shape shows up here in full, not just its type.
+          const preview = overBudget ? '' : ` raw=${redactedPreview(parsed)}`;
+          log(`WS message: type=${parsed.type} username=${username}${target}${preview}`);
+        }
       } catch {
         // Not valid JSON at all — previously silent, which was a real blind spot: this is exactly
         // the shape a spoofed-UA scanner probing the protocol blind (not just holding the socket
         // open) looks like. Never contains one of our own client's real fields (they always send
-        // valid JSON), so nothing here needs redaction.
-        if (!overBudget) {
+        // valid JSON), so nothing here needs redaction. Shares loggedMessageCount with the
+        // non-SESSION_UPDATE branch above (both draw from the same per-connection budget), computed
+        // separately here since it's a different branch of the same try/catch.
+        loggedMessageCount++;
+        if (loggedMessageCount <= MAX_LOGGED_MESSAGES_PER_CONNECTION) {
           log(`WS message: unparseable from ${ip}, raw=${oneLine(raw, MAX_MESSAGE_PREVIEW_LENGTH)}`);
         }
       }
