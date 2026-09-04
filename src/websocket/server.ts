@@ -27,15 +27,39 @@ const FIRST_MESSAGE_GRACE_MS = 8_000;
 const MAX_LOG_VALUE_LENGTH = 200;
 
 /**
- * Collapses control/newline characters and truncates. Every value this wraps below is
- * attacker-controlled (a header, or a field straight out of a client's JSON message) — without
- * this, a crafted value containing `\n` could forge extra, fake-looking log lines.
+ * Collapses control/newline characters and truncates to `maxLength` (default MAX_LOG_VALUE_LENGTH,
+ * for a single short field; pass MAX_MESSAGE_PREVIEW_LENGTH for a full message body). Every value
+ * this wraps below is attacker-controlled (a header, or a field/body straight out of a client's
+ * JSON message) — without this, a crafted value containing `\n` could forge extra, fake-looking
+ * log lines.
  */
-function oneLine(value: unknown): string {
+function oneLine(value: unknown, maxLength = MAX_LOG_VALUE_LENGTH): string {
   if (value === undefined || value === null) return '?';
   const str = Array.isArray(value) ? value.join(', ') : String(value);
-  return str.replace(/[\r\n\t]+/g, ' ').slice(0, MAX_LOG_VALUE_LENGTH);
+  return str.replace(/[\r\n\t]+/g, ' ').slice(0, maxLength);
 }
+
+/** Fields never logged verbatim, wherever they appear in an incoming message — AUTH carries a
+ *  real, live player token, and this flows to Axiom via Coolify's log drain, so logging it in
+ *  plaintext would mean anyone with log access could lift and reuse a real account's token. */
+const SENSITIVE_MESSAGE_FIELDS = new Set(['token', 'password']);
+const MAX_MESSAGE_PREVIEW_LENGTH = 500;
+
+/** Renders a parsed message for logging with any sensitive field replaced, truncated. */
+function redactedPreview(parsed: unknown): string {
+  if (parsed === null || typeof parsed !== 'object') return oneLine(parsed, MAX_MESSAGE_PREVIEW_LENGTH);
+  const clone: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
+  for (const key of Object.keys(clone)) {
+    if (SENSITIVE_MESSAGE_FIELDS.has(key.toLowerCase())) clone[key] = '[redacted]';
+  }
+  return oneLine(JSON.stringify(clone), MAX_MESSAGE_PREVIEW_LENGTH);
+}
+
+/** Caps how many messages on a single connection get their content logged, so a client that
+ *  floods the socket with garbage (rather than just idling, which the grace timeout already
+ *  handles) can't run up unbounded log volume/cost. Connection-scoped, not IP-scoped — resets
+ *  naturally on reconnect, which is fine since a fresh connection is a fresh thing to inspect. */
+const MAX_LOGGED_MESSAGES_PER_CONNECTION = 20;
 
 export function attachWebSocketServer(httpServer: Server): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer });
@@ -79,6 +103,7 @@ export function attachWebSocketServer(httpServer: Server): WebSocketServer {
     });
 
     let sentFirstMessage = false;
+    let loggedMessageCount = 0;
     const graceTimer = setTimeout(() => {
       if (sentFirstMessage || ws.readyState !== WebSocket.OPEN) return;
       log(`WS closing ${ip}: no message sent within ${FIRST_MESSAGE_GRACE_MS}ms of connecting`);
@@ -87,6 +112,8 @@ export function attachWebSocketServer(httpServer: Server): WebSocketServer {
 
     ws.on('message', (data) => {
       const raw = data.toString();
+      loggedMessageCount++;
+      const overBudget = loggedMessageCount > MAX_LOGGED_MESSAGES_PER_CONNECTION;
 
       try {
         const parsed = JSON.parse(raw);
@@ -105,8 +132,19 @@ export function attachWebSocketServer(httpServer: Server): WebSocketServer {
         const target = parsed.type === 'SUBSCRIBE_CHAT'
           ? ` communityId=${oneLine(parsed.communityId)} channelType=${oneLine(parsed.channelType)}`
           : '';
-        log(`WS message: type=${parsed.type} username=${username}${target}`);
-      } catch { /* ignore */ }
+        // Full (redacted) payload alongside the summary fields above — e.g. a spoofed-UA scanner
+        // sending a bogus AUTH or garbage SESSION_* shape shows up here in full, not just its type.
+        const preview = overBudget ? '' : ` raw=${redactedPreview(parsed)}`;
+        log(`WS message: type=${parsed.type} username=${username}${target}${preview}`);
+      } catch {
+        // Not valid JSON at all — previously silent, which was a real blind spot: this is exactly
+        // the shape a spoofed-UA scanner probing the protocol blind (not just holding the socket
+        // open) looks like. Never contains one of our own client's real fields (they always send
+        // valid JSON), so nothing here needs redaction.
+        if (!overBudget) {
+          log(`WS message: unparseable from ${ip}, raw=${oneLine(raw, MAX_MESSAGE_PREVIEW_LENGTH)}`);
+        }
+      }
       handleMessage(ws, raw).catch((err) => {
         logError('WS message handler error:', err);
       });

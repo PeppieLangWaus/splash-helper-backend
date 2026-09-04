@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-09-04
+### Changed
+- Log a redacted preview of each WS message's actual content (previously just its type/username), and log non-JSON messages at all instead of silently swallowing them — surfaces what a spoofed-User-Agent scanner is actually sending, not just that it connected. Tokens/passwords are always redacted before logging, and a connection is capped at 20 logged message bodies so a flooding client can't blow up log volume.
+
 ## [1.2.3] - 2026-09-04
 ### Changed
 - Log a WS connection's User-Agent alongside its IP, and log SUBSCRIBE_CHAT's target community/channel instead of a bare "username=?" — makes it possible to tell what a connection actually is (plugin, chat viewer, or neither) straight from the logs.
