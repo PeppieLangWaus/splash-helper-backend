@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-09-04
+### Fixed
+- Add a no-op `HELLO` WS message type so a frontend chat viewer with no community/channel selected yet (which legitimately sends nothing else) isn't mistaken for a silent scanner connection by the 1.2.1 timeout and disconnected.
+
 ## [1.2.1] - 2026-09-04
 ### Fixed
 - Close WebSocket connections that never send a single app message (AUTH, SUBSCRIBE_CHAT, etc.) within 8 seconds of connecting — internet-wide scanners were completing the handshake and holding the socket open indefinitely doing nothing.
