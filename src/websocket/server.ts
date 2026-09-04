@@ -23,6 +23,20 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
  */
 const FIRST_MESSAGE_GRACE_MS = 8_000;
 
+/** Longest a single logged value (User-Agent, a client-supplied field) is allowed to be. */
+const MAX_LOG_VALUE_LENGTH = 200;
+
+/**
+ * Collapses control/newline characters and truncates. Every value this wraps below is
+ * attacker-controlled (a header, or a field straight out of a client's JSON message) — without
+ * this, a crafted value containing `\n` could forge extra, fake-looking log lines.
+ */
+function oneLine(value: unknown): string {
+  if (value === undefined || value === null) return '?';
+  const str = Array.isArray(value) ? value.join(', ') : String(value);
+  return str.replace(/[\r\n\t]+/g, ' ').slice(0, MAX_LOG_VALUE_LENGTH);
+}
+
 export function attachWebSocketServer(httpServer: Server): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer });
 
@@ -55,8 +69,9 @@ export function attachWebSocketServer(httpServer: Server): WebSocketServer {
     // immediate hop (nginx, or Cloudflare's edge IP once that's in front). Logging-only, so this
     // reads CF-Connecting-IP directly rather than pulling in getClientIp()'s req.ip fallback.
     const ip = getCfConnectingIp(req.headers) ?? req.socket.remoteAddress;
+    const userAgent = oneLine(req.headers['user-agent']);
     const connectedAt = Date.now();
-    log(`WS connection from ${ip}`);
+    log(`WS connection from ${ip} (User-Agent: ${userAgent})`);
 
     ws.isAlive = true;
     ws.on('pong', () => {
@@ -84,7 +99,13 @@ export function attachWebSocketServer(httpServer: Server): WebSocketServer {
           clearTimeout(graceTimer);
         }
         const username = parsed.username ?? parsed.sessionData?.playerName ?? '?';
-        log(`WS message: type=${parsed.type} username=${username}`);
+        // SUBSCRIBE_CHAT carries no username (it's the frontend's anonymous chat viewer, not an
+        // authenticated splasher) — log what it's actually subscribing to instead, so this line
+        // says *something* rather than just "username=?" for every chat-viewer connection.
+        const target = parsed.type === 'SUBSCRIBE_CHAT'
+          ? ` communityId=${oneLine(parsed.communityId)} channelType=${oneLine(parsed.channelType)}`
+          : '';
+        log(`WS message: type=${parsed.type} username=${username}${target}`);
       } catch { /* ignore */ }
       handleMessage(ws, raw).catch((err) => {
         logError('WS message handler error:', err);

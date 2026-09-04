@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-09-04
+### Changed
+- Log a WS connection's User-Agent alongside its IP, and log SUBSCRIBE_CHAT's target community/channel instead of a bare "username=?" — makes it possible to tell what a connection actually is (plugin, chat viewer, or neither) straight from the logs.
+
 ## [1.2.2] - 2026-09-04
 ### Fixed
 - Add a no-op `HELLO` WS message type so a frontend chat viewer with no community/channel selected yet (which legitimately sends nothing else) isn't mistaken for a silent scanner connection by the 1.2.1 timeout and disconnected.
