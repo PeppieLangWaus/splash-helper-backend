@@ -1,6 +1,6 @@
 {
   "name": "splash-helper-backend",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Splash Helper Backend API",
   "main": "dist/app.js",
   "scripts": {
