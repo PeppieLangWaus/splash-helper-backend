@@ -21,12 +21,20 @@ const MAX_NAME_LENGTH = 100;
  *  Group Ironman clan — all three are the same "clan chat" concept from this backend's point of
  *  view, so all map to 'cc'. Missing the latter two used to mean a message from a guest/GIM clan
  *  channel simply didn't match any key here and got silently dropped as unparseable, which looked
- *  like "clan chat stopped being recognized" for anyone chatting in one of those. */
+ *  like "clan chat stopped being recognized" for anyone chatting in one of those.
+ *
+ *  CLAN_MESSAGE is different again: it's RuneLite's type for a *system* message posted into the
+ *  player's own clan chat, not a real chat message — the plugin only ever forwards one under this
+ *  type when its own ClanBroadcastPatterns has recognized it as a level-up/drop broadcast (clan
+ *  staff-configurable, under in-game Clan Settings notices); every other CLAN_MESSAGE (member
+ *  joined/left, coffer donation, etc.) is filtered out client-side. Also maps to 'cc' — the plugin
+ *  attaches the same primary clan's `clanChat` container to it as a real CLAN_CHAT message. */
 const MESSAGE_TYPE_TO_CHANNEL_TYPE: Record<string, ChatChannelType> = {
   FRIENDSCHAT: 'fc',
   CLAN_CHAT: 'cc',
   CLAN_GUEST_CHAT: 'cc',
   CLAN_GIM_CHAT: 'cc',
+  CLAN_MESSAGE: 'cc',
 };
 
 /**
