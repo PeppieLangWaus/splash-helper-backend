@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-09-08
+### Fixed
+- Stop rejecting a clan level-up/drop broadcast relayed by the plugin as "invalid-format" — it now classifies as clan chat, the same as a real clan chat message.
+
 ## [1.2.5] - 2026-09-04
 ### Changed
 - Log SESSION_UPDATE at most once a minute per connection, and without its raw content preview — it fires every ~10s for an actively-splashing session and is always post-AUTH (never scanner-relevant), so logging every one at full detail was drowning out everything else once real traffic picked up.
