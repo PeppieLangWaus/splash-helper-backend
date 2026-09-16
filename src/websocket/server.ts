@@ -3,6 +3,7 @@ import { IncomingMessage, Server } from 'http';
 import { handleMessage, handleDisconnect } from './handlers';
 import { log, logError } from '../utils/logger';
 import { getCfConnectingIp } from '../utils/clientIp';
+import { createSlidingWindowLimiter } from '../utils/slidingWindowLimiter';
 
 /** Tracks liveness for the ping/pong heartbeat below. */
 interface HeartbeatWebSocket extends WebSocket {
@@ -22,6 +23,25 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
  * them while still bounding how long a scanner can occupy a connection slot.
  */
 const FIRST_MESSAGE_GRACE_MS = 8_000;
+
+/**
+ * Hard cap on a single incoming frame — ws closes the connection (1009) past this. The largest
+ * legitimate message is a SESSION_UPDATE with a long session's playerCountSeries, well under
+ * 100KB; without a cap, ws defaults to 100MiB and an unauthenticated client can make the server
+ * buffer and JSON.parse arbitrarily large garbage.
+ */
+const MAX_PAYLOAD_BYTES = 256 * 1024;
+
+/**
+ * Per-IP budget for AUTH attempts. AUTH is unauthenticated and both creates accounts (trust on
+ * first use) and triggers setup-link generation (a signed JWT + an outbound shortener call), so
+ * it must not be free to hammer. A legit client sends one AUTH per connect and reconnects at
+ * most every 30s (capped backoff), so even several clients behind one IP reconnecting in
+ * lockstep stay far below this.
+ */
+const AUTH_WINDOW_MS = 60_000;
+const AUTH_MAX_PER_WINDOW = 20;
+const authLimiter = createSlidingWindowLimiter(AUTH_WINDOW_MS, AUTH_MAX_PER_WINDOW);
 
 /** Longest a single logged value (User-Agent, a client-supplied field) is allowed to be. */
 const MAX_LOG_VALUE_LENGTH = 200;
@@ -73,7 +93,7 @@ const MAX_LOGGED_MESSAGES_PER_CONNECTION = 20;
 const SESSION_UPDATE_LOG_INTERVAL_MS = 60_000;
 
 export function attachWebSocketServer(httpServer: Server): WebSocketServer {
-  const wss = new WebSocketServer({ server: httpServer });
+  const wss = new WebSocketServer({ server: httpServer, maxPayload: MAX_PAYLOAD_BYTES });
 
   // Neither this server nor any of the current clients (RuneLite plugin, web frontend) send
   // their own keepalive traffic, so a WS that's open but quiet between messages (e.g. a chat
@@ -134,6 +154,14 @@ export function attachWebSocketServer(httpServer: Server): WebSocketServer {
         if (typeof parsed?.type === 'string' && parsed.type.length > 0) {
           sentFirstMessage = true;
           clearTimeout(graceTimer);
+        }
+
+        if (parsed?.type === 'AUTH' && !authLimiter.allow(ip ?? 'unknown')) {
+          log(`WS AUTH rate-limited for ${ip}`);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'AUTH_FAILURE', reason: 'Too many authentication attempts. Please wait.' }));
+          }
+          return;
         }
 
         if (parsed?.type === 'SESSION_UPDATE') {

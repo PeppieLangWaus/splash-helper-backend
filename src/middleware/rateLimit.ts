@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { getClientIp } from '../utils/clientIp';
+import { createSlidingWindowLimiter } from '../utils/slidingWindowLimiter';
 
 interface RateLimitOptions {
   windowMs: number;
@@ -15,21 +16,14 @@ interface RateLimitOptions {
  * server instances — fine for the low-traffic, single-process deployment this project runs.
  */
 export function rateLimit({ windowMs, max, keyFn }: RateLimitOptions) {
-  const hits = new Map<string, number[]>();
+  const limiter = createSlidingWindowLimiter(windowMs, max);
 
   return (req: Request, res: Response, next: NextFunction): void => {
     const key = (keyFn ? keyFn(req) : getClientIp(req)) ?? 'unknown';
-    const now = Date.now();
-    const windowStart = now - windowMs;
-
-    const timestamps = (hits.get(key) ?? []).filter((t) => t > windowStart);
-    if (timestamps.length >= max) {
+    if (!limiter.allow(key)) {
       res.status(429).json({ error: 'Too many attempts. Please try again later.' });
       return;
     }
-
-    timestamps.push(now);
-    hits.set(key, timestamps);
     next();
   };
 }

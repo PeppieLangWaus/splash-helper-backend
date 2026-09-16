@@ -23,12 +23,16 @@ const SHORTENER_API_URL = process.env.SHORTENER_API_URL;
 const SHORTENER_API_KEY = process.env.SHORTENER_API_KEY;
 const SHORTENER_TIMEOUT_MS = 2500;
 
+// Same per-IP budget as resetPasswordTokenLimiter below — login is the other online
+// password-guessing surface.
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+
 /**
  * POST /auth/login
  * Body: { username: string; password: string }
  * Returns: { token: string }
  */
-router.post('/login', async (req: Request, res: Response): Promise<void> => {
+router.post('/login', loginLimiter, async (req: Request, res: Response): Promise<void> => {
   const { username, password } = req.body as { username?: string; password?: string };
 
   if (!username || !password) {
@@ -53,12 +57,14 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
   res.json({ token, username: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible });
 });
 
+const setupTokenLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+
 /**
  * POST /auth/setup/:setupToken
  * Body: { password: string }
  * Validates the signed setup JWT, sets the user's password, marks the link as used.
  */
-router.post('/setup/:setupToken', async (req: Request, res: Response): Promise<void> => {
+router.post('/setup/:setupToken', setupTokenLimiter, async (req: Request, res: Response): Promise<void> => {
   const { setupToken } = req.params;
   const { password } = req.body as { password?: string };
 
