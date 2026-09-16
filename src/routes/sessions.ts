@@ -6,15 +6,20 @@ import { ArchivedSession } from '../models/ArchivedSession';
 import { SplashEntry } from '../types';
 import { enqueueWebhookNotification } from '../services/discordWebhook';
 import { MIN_ARCHIVABLE_SESSION_DURATION_MS } from '../websocket/handlers';
+import { requireAuth } from '../middleware/auth';
 
 const router = Router();
 
 /**
  * POST /sessions/upload
- * Accepts a JSON array of SplashEntry objects in the request body.
- * Intended for manual testing only — real data comes through WebSocket.
+ * Accepts a JSON array of SplashEntry objects in the request body — the Account Settings
+ * "import sessions" feature, restoring a splasher's own exported history.
+ *
+ * A regular user may only upload entries for their own username; entries for anyone else are
+ * skipped, and users are never auto-created for them. Admins may upload for any player
+ * (auto-creating the User if needed) — the original manual-testing behavior.
  */
-router.post('/upload', async (req: Request, res: Response): Promise<void> => {
+router.post('/upload', requireAuth, async (req: Request, res: Response): Promise<void> => {
   try {
     if (!Array.isArray(req.body) || req.body.length === 0) {
       res.status(400).json({ error: 'Request body must be a non-empty JSON array of session entries' });
@@ -22,6 +27,7 @@ router.post('/upload', async (req: Request, res: Response): Promise<void> => {
     }
 
     const entries = req.body as SplashEntry[];
+    const requester = req.user!;
     const addedByPlayer: Record<string, SplashEntry[]> = {};
     let skipped = 0;
 
@@ -37,9 +43,17 @@ router.post('/upload', async (req: Request, res: Response): Promise<void> => {
       }
 
       const username = entry.session.playerName;
+      if (!requester.isAdmin && username !== requester.sub) {
+        skipped++;
+        continue;
+      }
 
       let user = await User.findOne({ username });
       if (!user) {
+        if (!requester.isAdmin) {
+          skipped++;
+          continue;
+        }
         const token = randomUUID();
         const passwordHash = await bcrypt.hash(randomUUID(), 12);
         user = await User.create({ username, passwordHash, token, isAdmin: false, setupLinkUsed: false });
