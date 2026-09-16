@@ -14,7 +14,24 @@ import { getClientIp } from '../utils/clientIp';
 
 const router = Router();
 const JWT_SECRET = requireEnv('JWT_SECRET');
-const SETUP_LINK_SECRET = process.env.SETUP_LINK_SECRET ?? JWT_SECRET;
+
+/**
+ * The setup-link secret is shared with the URL shortener (which verifies setup JWTs before
+ * shortening). In production it must be set AND differ from JWT_SECRET — falling back to
+ * JWT_SECRET would hand the shortener service the session-JWT signing key, letting it mint
+ * arbitrary (including admin) session tokens. Dev keeps the convenient fallback.
+ */
+function resolveSetupLinkSecret(): string {
+  if (process.env.NODE_ENV !== 'production') {
+    return process.env.SETUP_LINK_SECRET ?? JWT_SECRET;
+  }
+  const secret = requireEnv('SETUP_LINK_SECRET');
+  if (secret === JWT_SECRET) {
+    throw new Error('SETUP_LINK_SECRET must differ from JWT_SECRET in production');
+  }
+  return secret;
+}
+const SETUP_LINK_SECRET = resolveSetupLinkSecret();
 const SETUP_LINK_EXPIRY = (process.env.SETUP_LINK_EXPIRY ?? '24h') as `${number}${'s'|'m'|'h'|'d'}` | undefined;
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 // Both optional: if either is unset (e.g. local dev without the shortener running),
