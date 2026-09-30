@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-30
+### Added
+- Track and store `playerDeaths` in session data — the plugin has sent this in the same session payload as `level99Count` since PR #3, but the backend never picked it up; persisted on archived sessions and exposed through the existing `/splashers` endpoints.
+
 ## [1.3.0] - 2026-09-30
 ### Added
 - Track and store `level99Count` (nearby players reaching level 99 in a skill) in session data, matching the counter added to the RuneLite plugin — persisted on archived sessions and exposed through the existing `/splashers` endpoints.

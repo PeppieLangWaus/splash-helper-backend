@@ -24,6 +24,7 @@ export interface SessionData {
   /** Live nearby-player count at the moment of this update (as opposed to highest/average). */
   currentPlayerCount?: number;
   pickpocketerCount: number;
+  playerDeaths: number;
   /** Nearby players (not the local player) observed reaching level 99 in a skill this session. */
   level99Count: number;
   startingRuneCount: number;
