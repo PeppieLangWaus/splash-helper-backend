@@ -39,6 +39,7 @@ function makeEntry(overrides: Record<string, unknown> = {}) {
       highestPlayerCount: 4,
       averagePlayerCount: 3.2,
       pickpocketerCount: 0,
+      level99Count: 0,
       startingRuneCount: 5000,
       currentRuneCount: 3000,
       runeUsageMap: { '556': 100 },

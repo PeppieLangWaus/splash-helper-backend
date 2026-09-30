@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-30
+### Added
+- Track and store `level99Count` (nearby players reaching level 99 in a skill) in session data, matching the counter added to the RuneLite plugin — persisted on archived sessions and exposed through the existing `/splashers` endpoints.
+
 ## [1.2.6] - 2026-09-08
 ### Fixed
 - Stop rejecting a clan level-up/drop broadcast relayed by the plugin as "invalid-format" — it now classifies as clan chat, the same as a real clan chat message.

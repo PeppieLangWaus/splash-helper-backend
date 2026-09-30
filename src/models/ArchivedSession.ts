@@ -40,6 +40,7 @@ const SessionDataSchema = new Schema<SessionData>(
     averagePlayerCount: { type: Number, required: true },
     currentPlayerCount: { type: Number },
     pickpocketerCount: { type: Number, required: true },
+    level99Count: { type: Number, required: true },
     startingRuneCount: { type: Number, required: true },
     currentRuneCount: { type: Number, required: true },
     runeUsageMap: { type: Map, of: Number, required: true },
