@@ -29,6 +29,8 @@ export function randomFakeSessionData(username: string, overrides: Partial<Sessi
     averagePlayerCount: Number((Math.random() * 6).toFixed(1)),
     currentPlayerCount: randomInt(0, 8),
     pickpocketerCount: randomInt(0, 4),
+    playerDeaths: randomInt(0, 2),
+    level99Count: randomInt(0, 3),
     startingRuneCount: 10_000,
     currentRuneCount: Math.max(0, 10_000 - spellsCast * runeCostPerCast),
     runeUsageMap: { '556': spellsCast },
