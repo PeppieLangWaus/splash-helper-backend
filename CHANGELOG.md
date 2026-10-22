@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-22
+### Added
+- `GET /link-preview` resolves OSRS Wiki articles, Discord invites and RuneLite Plugin Hub listings to a title, summary and thumbnail for the frontend's hover previews, caching every result (including misses) in Mongo so each link hits its upstream only once per TTL window.
+
 ## [1.2.6] - 2026-09-08
 ### Fixed
 - Stop rejecting a clan level-up/drop broadcast relayed by the plugin as "invalid-format" — it now classifies as clan chat, the same as a real clan chat message.
