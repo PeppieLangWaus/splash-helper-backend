@@ -4,6 +4,54 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-09-08
+### Fixed
+- Stop rejecting a clan level-up/drop broadcast relayed by the plugin as "invalid-format" — it now classifies as clan chat, the same as a real clan chat message.
+
+## [1.2.5] - 2026-09-04
+### Changed
+- Log SESSION_UPDATE at most once a minute per connection, and without its raw content preview — it fires every ~10s for an actively-splashing session and is always post-AUTH (never scanner-relevant), so logging every one at full detail was drowning out everything else once real traffic picked up.
+
+## [1.2.4] - 2026-09-04
+### Changed
+- Log a redacted preview of each WS message's actual content (previously just its type/username), and log non-JSON messages at all instead of silently swallowing them — surfaces what a spoofed-User-Agent scanner is actually sending, not just that it connected. Tokens/passwords are always redacted before logging, and a connection is capped at 20 logged message bodies so a flooding client can't blow up log volume.
+
+## [1.2.3] - 2026-09-04
+### Changed
+- Log a WS connection's User-Agent alongside its IP, and log SUBSCRIBE_CHAT's target community/channel instead of a bare "username=?" — makes it possible to tell what a connection actually is (plugin, chat viewer, or neither) straight from the logs.
+
+## [1.2.2] - 2026-09-04
+### Fixed
+- Add a no-op `HELLO` WS message type so a frontend chat viewer with no community/channel selected yet (which legitimately sends nothing else) isn't mistaken for a silent scanner connection by the 1.2.1 timeout and disconnected.
+
+## [1.2.1] - 2026-09-04
+### Fixed
+- Close WebSocket connections that never send a single app message (AUTH, SUBSCRIBE_CHAT, etc.) within 8 seconds of connecting — internet-wide scanners were completing the handshake and holding the socket open indefinitely doing nothing.
+
+## [1.2.0] - 2026-09-02
+### Added
+- Log requests the API rejected outright (unmatched routes, malformed/oversized JSON bodies) as a structured JSON line on stdout, with method, path, client IP, and sanitized headers/body -- so exploit-scanner traffic shows up in Axiom (via Coolify's log drain) instead of silently 404ing with no trace. Caps how many lines a single IP can generate per minute so one aggressive scanner can't flood the logs.
+
+## [1.1.4] - 2026-09-02
+### Changed
+- Move item-icon rendering out of the Docker image build and into a weekly GitHub Actions workflow that publishes a release asset — the build no longer needs a JDK/Gradle or a live OpenRS2 cache download, fixing deploys that failed or ran for hours when that step's BuildKit cache mount didn't survive between redeploys.
+
+## [1.1.3] - 2026-08-31
+### Fixed
+- Add a WebSocket ping/pong heartbeat so connections silently killed by an idle reverse-proxy timeout are detected and closed cleanly, instead of sitting dead until the client's own reconnect logic eventually notices.
+
+## [1.1.2] - 2026-08-31
+### Fixed
+- Stop dropping a migrated Friends Chat's messages whenever one doesn't carry a usable owner value — the chat relay now falls back to matching by the FC's current (self-healed) name instead of requiring an exact owner match on every single message.
+
+## [1.1.1] - 2026-08-30
+### Fixed
+- Fix the server failing to start (`CannotCreateIndex`) because a Friends-Chat/Clan-Chat uniqueness index used a `$exists: false` filter that MongoDB rejects in partial indexes; it now uses an explicit synced flag instead, with a one-time migration to backfill it for existing communities.
+
+## [1.1.0] - 2026-08-30
+### Added
+- Register a community's Friends Chat by its owner's RSN instead of its in-game name, and self-heal the stored name from live chat traffic — a Friends Chat can now be renamed at any time without breaking the chat relay's classification.
+
 ## [1.0.2] - 2026-08-18
 ### Changed
 - Skip the Docker build's item-icon render step when OpenRS2's live game cache hasn't changed since the last build — a BuildKit-persisted build cache now reuses the previously-rendered icons instead of redownloading (~180MB) and re-rendering (~4000 icons) on every deploy.

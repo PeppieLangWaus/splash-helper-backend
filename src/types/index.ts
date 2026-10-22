@@ -58,6 +58,7 @@ export type WsMessageType =
   | 'AUTH_SUCCESS'
   | 'AUTH_FAILURE'
   | 'ACK'
+  | 'HELLO'
   | 'SUBSCRIBE_CHAT'
   | 'UNSUBSCRIBE_CHAT'
   | 'CHAT_SUBSCRIBED'
@@ -90,7 +91,18 @@ export interface WsUnsubscribeChatMessage {
   type: 'UNSUBSCRIBE_CHAT';
 }
 
-export type WsIncomingMessage = WsAuthMessage | WsSessionMessage | WsSubscribeChatMessage | WsUnsubscribeChatMessage;
+/**
+ * Sent immediately on connect by any client with nothing else to say yet — e.g. a frontend chat
+ * viewer that's opened the socket before a community/channel is selected (see useChatFeed.ts),
+ * so it has no SUBSCRIBE_CHAT to send and would otherwise sit silent. Purely a liveness signal;
+ * the server does nothing with it beyond treating the connection as real (see server.ts's
+ * first-message grace timeout) rather than an idle scanner.
+ */
+export interface WsHelloMessage {
+  type: 'HELLO';
+}
+
+export type WsIncomingMessage = WsAuthMessage | WsSessionMessage | WsSubscribeChatMessage | WsUnsubscribeChatMessage | WsHelloMessage;
 
 export interface WsAuthSuccessResponse {
   type: 'AUTH_SUCCESS';

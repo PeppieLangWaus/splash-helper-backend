@@ -5,9 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   rmSync,
-  writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -18,10 +16,12 @@ import extractZip from 'extract-zip';
  * Renders an icon PNG for every named OSRS item and copies them into data/item-icons/, for
  * routes/items.ts (`GET /items/:id/icon`) to serve.
  *
- * This is an offline maintenance step, not something the live server ever runs itself: run it
- * manually (or via CI) after a game update adds/changes items, then commit the changed
- * data/item-icons/*.png files. Trimmed port of RuneProfile's scripts/ts-scripts/sync-item-icons.ts
- * + lib/openrs2.ts — cache download -> Java render -> copy, no R2/CDN upload, diffing, or
+ * This is an offline maintenance step, not something the live server (or the Docker image build)
+ * ever runs itself: `.github/workflows/render-item-icons.yml` runs it on a schedule and publishes
+ * the result as the "item-icons-latest" GitHub Release asset, which the Dockerfile fetches
+ * pre-rendered (see that workflow + scripts/item-icons/README.md for why this moved out of the
+ * image build). Trimmed port of RuneProfile's scripts/ts-scripts/sync-item-icons.ts +
+ * lib/openrs2.ts — cache download -> Java render -> copy, no R2/CDN upload, diffing, or
  * sprite-atlas compositing (see scripts/item-icons/README.md for what else was dropped and why).
  * Icons are rendered to match RuneProfile's own (quantity 10000 + its quantities.json overrides,
  * so stackable items show their full-stack sprite variant) rather than a bare single unit.
@@ -30,18 +30,8 @@ import extractZip from 'extract-zip';
  *   npm run render-item-icons                          # latest live cache from OpenRS2
  *   npm run render-item-icons -- --cache-dir <path>     # skip download, render from an existing disk store
  *   npm run render-item-icons -- --ids 995,4151         # only these item IDs (fast smoke test)
- *   npm run render-item-icons -- --build-cache <dir>    # see "Build cache" below
  *
  * Requires a JDK (11+, on PATH or via JAVA_HOME).
- *
- * ## Build cache
- *
- * `--build-cache <dir>` (used by the Dockerfile, via a BuildKit `--mount=type=cache`) skips the
- * download + render entirely when OpenRS2's latest live cache id is the same one recorded in
- * `<dir>/cache-version.txt` from a previous run, reusing the icons saved in `<dir>/icons/`
- * instead. It only applies to a full "latest cache, every item" run — it's ignored if `--cache-dir`
- * or `--ids` is also passed, since neither produces output safe to treat as a complete build-cache
- * entry.
  */
 
 const OPENRS2_CACHES_URL = 'https://archive.openrs2.org/caches.json';
@@ -56,7 +46,6 @@ const argValue = (flag: string): string | null => {
 };
 const cacheDirArg = argValue('--cache-dir');
 const idsArg = argValue('--ids');
-const buildCacheArg = argValue('--build-cache');
 
 interface Openrs2Cache {
   id: number;
@@ -64,30 +53,53 @@ interface Openrs2Cache {
   timestamp: string;
 }
 
+// OpenRS2 and the cache download are the two network calls flaky enough in practice to be worth
+// retrying on their own (observed failure: a mid-transfer socket reset on the ~180MB disk.zip) —
+// everything downstream (Gradle, the renderer itself) is local and doesn't need this.
+async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) {
+        const delayMs = 2 ** attempt * 1000; // 2s, 4s, ...
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`${label} failed (attempt ${attempt}/${attempts}): ${message}. Retrying in ${delayMs / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 // The OpenRS2 archive (https://archive.openrs2.org) mirrors every OSRS cache straight from
 // Jagex's JS5 servers, within minutes of a game update.
 async function resolveLatestCache(): Promise<Openrs2Cache> {
-  const response = await fetch(OPENRS2_CACHES_URL);
-  if (!response.ok) {
-    throw new Error(`OpenRS2 caches.json returned ${response.status}`);
-  }
-  const caches: Array<{
-    id: number;
-    scope: string;
-    game: string;
-    environment: string;
-    language: string;
-    timestamp: string | null;
-    disk_store_valid: boolean;
-  }> = await response.json();
+  return withRetry('Fetching OpenRS2 caches.json', async () => {
+    const response = await fetch(OPENRS2_CACHES_URL);
+    if (!response.ok) {
+      throw new Error(`OpenRS2 caches.json returned ${response.status}`);
+    }
+    const caches: Array<{
+      id: number;
+      scope: string;
+      game: string;
+      environment: string;
+      language: string;
+      timestamp: string | null;
+      disk_store_valid: boolean;
+    }> = await response.json();
 
-  const latest = caches
-    .filter((c) => c.game === 'oldschool' && c.environment === 'live' && c.language === 'en' && c.disk_store_valid && c.timestamp)
-    .sort((a, b) => new Date(b.timestamp as string).getTime() - new Date(a.timestamp as string).getTime())[0];
-  if (!latest) {
-    throw new Error('No valid live oldschool cache found on OpenRS2.');
-  }
-  return { id: latest.id, scope: latest.scope, timestamp: latest.timestamp as string };
+    const latest = caches
+      .filter((c) => c.game === 'oldschool' && c.environment === 'live' && c.language === 'en' && c.disk_store_valid && c.timestamp)
+      .sort((a, b) => new Date(b.timestamp as string).getTime() - new Date(a.timestamp as string).getTime())[0];
+    if (!latest) {
+      throw new Error('No valid live oldschool cache found on OpenRS2.');
+    }
+    return { id: latest.id, scope: latest.scope, timestamp: latest.timestamp as string };
+  });
 }
 
 // Downloads and extracts a cache's disk store into destDir; returns the directory containing
@@ -99,11 +111,13 @@ async function downloadCache(cache: Openrs2Cache, destDir: string): Promise<stri
   const zipPath = path.join(destDir, 'disk.zip');
   const downloadUrl = `https://archive.openrs2.org/caches/${cache.scope}/${cache.id}/disk.zip`;
   console.log(`Downloading ${downloadUrl}...`);
-  const download = await fetch(downloadUrl);
-  if (!download.ok || !download.body) {
-    throw new Error(`Cache download returned ${download.status}`);
-  }
-  await pipeline(Readable.fromWeb(download.body as never), createWriteStream(zipPath));
+  await withRetry(`Downloading cache ${cache.id}`, async () => {
+    const download = await fetch(downloadUrl);
+    if (!download.ok || !download.body) {
+      throw new Error(`Cache download returned ${download.status}`);
+    }
+    await pipeline(Readable.fromWeb(download.body as never), createWriteStream(zipPath));
+  });
 
   await extractZip(zipPath, { dir: destDir });
   const cacheDir = path.join(destDir, 'cache');
@@ -152,67 +166,8 @@ async function resolveCacheDir(): Promise<string> {
   return downloadCache(latest, WORK_DIR);
 }
 
-// The cache id (not the icons themselves) is what actually changes when OSRS ships an update, so
-// that's what's compared build-to-build; `<dir>/icons/` just carries the render that id produced.
-function readCachedCacheId(buildCacheDir: string): number | null {
-  const versionFile = path.join(buildCacheDir, 'cache-version.txt');
-  if (!existsSync(versionFile)) return null;
-  const id = Number(readFileSync(versionFile, 'utf8').trim());
-  return Number.isInteger(id) ? id : null;
-}
-
-function reuseFromBuildCache(buildCacheDir: string): number {
-  const savedIconsDir = path.join(buildCacheDir, 'icons');
-  if (!existsSync(savedIconsDir)) return 0;
-  mkdirSync(OUT_DIR, { recursive: true });
-  const files = readdirSync(savedIconsDir).filter((f) => /^\d+\.png$/.test(f));
-  for (const file of files) {
-    copyFileSync(path.join(savedIconsDir, file), path.join(OUT_DIR, file));
-  }
-  return files.length;
-}
-
-function saveToBuildCache(buildCacheDir: string, cacheId: number): void {
-  const savedIconsDir = path.join(buildCacheDir, 'icons');
-  rmSync(savedIconsDir, { recursive: true, force: true });
-  mkdirSync(savedIconsDir, { recursive: true });
-  const files = readdirSync(OUT_DIR).filter((f) => /^\d+\.png$/.test(f));
-  for (const file of files) {
-    copyFileSync(path.join(OUT_DIR, file), path.join(savedIconsDir, file));
-  }
-  writeFileSync(path.join(buildCacheDir, 'cache-version.txt'), String(cacheId));
-}
-
 async function main(): Promise<void> {
-  // When --build-cache applies, resolve the latest cache id up front so it can be compared
-  // against what's recorded from the last run before deciding whether to download anything at all.
-  let latestForBuildCache: Openrs2Cache | null = null;
-
-  if (buildCacheArg && !cacheDirArg && !idsArg) {
-    console.log('Finding the latest live cache on OpenRS2...');
-    const latest = await resolveLatestCache();
-    const cachedId = readCachedCacheId(buildCacheArg);
-
-    if (cachedId === latest.id) {
-      const count = reuseFromBuildCache(buildCacheArg);
-      if (count > 0) {
-        console.log(
-          `Cache ${latest.id} is unchanged since the last build — reusing ${count} icon${count === 1 ? '' : 's'} from the build cache, skipping download + render.`,
-        );
-        return;
-      }
-      console.log(`Build cache for cache ${latest.id} has no saved icons — rendering anyway.`);
-    } else {
-      console.log(
-        cachedId === null
-          ? 'No previous build-cache entry found — rendering from scratch.'
-          : `Cache changed since the last build (${cachedId} -> ${latest.id}) — rendering from scratch.`,
-      );
-    }
-    latestForBuildCache = latest;
-  }
-
-  const cacheDir = latestForBuildCache ? await downloadCache(latestForBuildCache, WORK_DIR) : await resolveCacheDir();
+  const cacheDir = await resolveCacheDir();
   const iconsDir = renderIcons(cacheDir);
 
   const count = copyIcons(iconsDir);
@@ -220,11 +175,6 @@ async function main(): Promise<void> {
     throw new Error(`No rendered icons found in ${iconsDir}`);
   }
   console.log(`Copied ${count} item icon${count === 1 ? '' : 's'} into ${OUT_DIR}`);
-
-  if (buildCacheArg && latestForBuildCache) {
-    saveToBuildCache(buildCacheArg, latestForBuildCache.id);
-    console.log(`Saved cache ${latestForBuildCache.id}'s icons into the build cache for future builds.`);
-  }
 }
 
 main().catch((error) => {

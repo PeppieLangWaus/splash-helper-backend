@@ -427,6 +427,13 @@ export async function handleMessage(ws: WebSocket, raw: string): Promise<void> {
     return;
   }
 
+  // Pure liveness signal, no-op — see WsHelloMessage's doc comment. Handled before the auth gate
+  // below for the same reason as SUBSCRIBE_CHAT: an anonymous viewer sending this never sends
+  // AUTH at all, and shouldn't get an AUTH_FAILURE back for it.
+  if (msg.type === 'HELLO') {
+    return;
+  }
+
   // Chat subscriptions are read-only and come from frontend viewers, not the RuneLite plugin —
   // deliberately handled before the auth gate below, since a viewer never sends AUTH at all.
   if (msg.type === 'SUBSCRIBE_CHAT') {

@@ -105,15 +105,14 @@ describe('parseChatRelayMessage — clan message type variants', () => {
   // (Group Ironman clan) are three distinct RuneLite ChatMessageType values for what is, from this
   // backend's point of view, the same "clan chat" concept — all three must classify as 'cc', or a
   // message from a guest/GIM clan channel is silently dropped as unparseable (see the matching
-  // comment on MESSAGE_TYPE_TO_CHANNEL_TYPE in chatRelay.ts).
-  it.each(['CLAN_CHAT', 'CLAN_GUEST_CHAT', 'CLAN_GIM_CHAT'])('classifies a %s message as cc', (type) => {
+  // comment on MESSAGE_TYPE_TO_CHANNEL_TYPE in chatRelay.ts). CLAN_MESSAGE is the odd one out — a
+  // clan *system* message, not a real chat message — but the plugin only forwards one under this
+  // type when it's a level-up/drop broadcast, so it must classify as 'cc' too, or every such
+  // broadcast is dropped as unparseable instead of relayed.
+  it.each(['CLAN_CHAT', 'CLAN_GUEST_CHAT', 'CLAN_GIM_CHAT', 'CLAN_MESSAGE'])('classifies a %s message as cc', (type) => {
     const parsed = parseChatRelayMessage(makeClanMessage(type));
     expect(parsed?.channelType).toBe('cc');
     expect(parsed?.chatName).toBe('Ardy Splash CC');
-  });
-
-  it('rejects a clan system-message type (not an actual chat line)', () => {
-    expect(parseChatRelayMessage(makeClanMessage('CLAN_MESSAGE'))).toBeNull();
   });
 });
 

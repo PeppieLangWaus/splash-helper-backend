@@ -538,6 +538,7 @@ describe('GET and PUT /api/communities/:communityId/chat-config', () => {
       .set('Authorization', `Bearer ${makeToken('alice')}`);
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
+      friendsChatOwner: null,
       friendsChatName: null,
       friendsChatDisplayName: null,
       clanChatName: null,
@@ -546,7 +547,7 @@ describe('GET and PUT /api/communities/:communityId/chat-config', () => {
     });
   });
 
-  it('sets Friends/Clan Chat names, the FC display name, and both chat webhooks', async () => {
+  it('sets the Friends Chat owner, Clan Chat name, the FC display name, and both chat webhooks', async () => {
     const alice = await createUser('alice', { communityEligible: true });
     const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
 
@@ -554,7 +555,7 @@ describe('GET and PUT /api/communities/:communityId/chat-config', () => {
       .put(`/api/communities/${community._id}/chat-config`)
       .set('Authorization', `Bearer ${makeToken('alice')}`)
       .send({
-        friendsChatName: 'Ardy Splash',
+        friendsChatOwner: 'Zezima',
         friendsChatDisplayName: 'Ardy Splashers',
         clanChatName: 'Ardy Splash CC',
         discordFriendsChatWebhookUrl: VALID_WEBHOOK_1,
@@ -563,7 +564,10 @@ describe('GET and PUT /api/communities/:communityId/chat-config', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      friendsChatName: 'Ardy Splash',
+      friendsChatOwner: 'Zezima',
+      // Not settable directly — populated only once a message from this FC is relayed (see
+      // chatRelay.ts's syncFriendsChatIdentity) — so still null right after registration.
+      friendsChatName: null,
       friendsChatDisplayName: 'Ardy Splashers',
       clanChatName: 'Ardy Splash CC',
       discordFriendsChatWebhookUrl: VALID_WEBHOOK_1,
@@ -574,7 +578,7 @@ describe('GET and PUT /api/communities/:communityId/chat-config', () => {
     expect(names).toHaveLength(2);
   });
 
-  it('rejects a Friends/Clan Chat name already registered to a different community', async () => {
+  it('rejects a Friends Chat owner or Clan Chat name already registered to a different community', async () => {
     const alice = await createUser('alice', { communityEligible: true });
     const bob = await createUser('bob', { communityEligible: true });
     const communityA = await Community.create({ name: 'A', ownerIds: [alice._id], memberUserIds: [] });
@@ -583,59 +587,58 @@ describe('GET and PUT /api/communities/:communityId/chat-config', () => {
     await request(app)
       .put(`/api/communities/${communityA._id}/chat-config`)
       .set('Authorization', `Bearer ${makeToken('alice')}`)
-      .send({ friendsChatName: 'Shared Name' })
+      .send({ friendsChatOwner: 'Zezima' })
       .expect(200);
 
     const res = await request(app)
       .put(`/api/communities/${communityB._id}/chat-config`)
       .set('Authorization', `Bearer ${makeToken('bob')}`)
-      .send({ friendsChatName: 'Shared Name' });
+      .send({ friendsChatOwner: 'Zezima' });
     expect(res.status).toBe(409);
 
     const namesForB = await ChatChannelName.find({ communityId: communityB._id }).lean();
     expect(namesForB).toHaveLength(0);
   });
 
-  it('allows the same name to be used as both a Friends Chat and a Clan Chat name', async () => {
+  it('allows the same value to be used as one community\'s CC name and another\'s FC owner — separate namespaces', async () => {
     const alice = await createUser('alice', { communityEligible: true });
     const bob = await createUser('bob', { communityEligible: true });
     const communityA = await Community.create({ name: 'A', ownerIds: [alice._id], memberUserIds: [] });
     const communityB = await Community.create({ name: 'B', ownerIds: [bob._id], memberUserIds: [] });
 
-    // Same community, same name, both channel types.
-    const sameRes = await request(app)
+    const ccRes = await request(app)
       .put(`/api/communities/${communityA._id}/chat-config`)
       .set('Authorization', `Bearer ${makeToken('alice')}`)
-      .send({ friendsChatName: 'Ardy Splash', clanChatName: 'Ardy Splash' });
-    expect(sameRes.status).toBe(200);
-    expect(sameRes.body.friendsChatName).toBe('Ardy Splash');
-    expect(sameRes.body.clanChatName).toBe('Ardy Splash');
+      .send({ clanChatName: 'Ardy Splash' });
+    expect(ccRes.status).toBe(200);
+    expect(ccRes.body.clanChatName).toBe('Ardy Splash');
 
-    // A different community can also register that same name as the other channel type.
-    const otherRes = await request(app)
+    // A different community can register that same value as its own FC owner — communityA's
+    // CC-name registration doesn't collide with the separate FC-owner namespace.
+    const fcRes = await request(app)
       .put(`/api/communities/${communityB._id}/chat-config`)
       .set('Authorization', `Bearer ${makeToken('bob')}`)
-      .send({ clanChatName: 'Ardy Splash 2' })
+      .send({ friendsChatOwner: 'Ardy Splash' })
       .expect(200);
-    expect(otherRes.body.clanChatName).toBe('Ardy Splash 2');
+    expect(fcRes.body.friendsChatOwner).toBe('Ardy Splash');
   });
 
-  it('allows re-saving the same name for the community that already owns it', async () => {
+  it('allows re-saving the same owner for the community that already owns it', async () => {
     const alice = await createUser('alice', { communityEligible: true });
     const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
 
     await request(app)
       .put(`/api/communities/${community._id}/chat-config`)
       .set('Authorization', `Bearer ${makeToken('alice')}`)
-      .send({ friendsChatName: 'Ardy Splash' })
+      .send({ friendsChatOwner: 'Zezima' })
       .expect(200);
 
     const res = await request(app)
       .put(`/api/communities/${community._id}/chat-config`)
       .set('Authorization', `Bearer ${makeToken('alice')}`)
-      .send({ friendsChatName: 'Ardy Splash', clanChatName: 'Ardy CC' });
+      .send({ friendsChatOwner: 'Zezima', clanChatName: 'Ardy CC' });
     expect(res.status).toBe(200);
-    expect(res.body.friendsChatName).toBe('Ardy Splash');
+    expect(res.body.friendsChatOwner).toBe('Zezima');
     expect(res.body.clanChatName).toBe('Ardy CC');
   });
 
@@ -650,22 +653,22 @@ describe('GET and PUT /api/communities/:communityId/chat-config', () => {
     expect(res.status).toBe(400);
   });
 
-  it('clears a Friends Chat name when set to an empty string', async () => {
+  it('clears a Friends Chat owner when set to an empty string', async () => {
     const alice = await createUser('alice', { communityEligible: true });
     const community = await Community.create({ name: 'Alice Community', ownerIds: [alice._id], memberUserIds: [] });
 
     await request(app)
       .put(`/api/communities/${community._id}/chat-config`)
       .set('Authorization', `Bearer ${makeToken('alice')}`)
-      .send({ friendsChatName: 'Ardy Splash' })
+      .send({ friendsChatOwner: 'Zezima' })
       .expect(200);
 
     const res = await request(app)
       .put(`/api/communities/${community._id}/chat-config`)
       .set('Authorization', `Bearer ${makeToken('alice')}`)
-      .send({ friendsChatName: '' });
+      .send({ friendsChatOwner: '' });
     expect(res.status).toBe(200);
-    expect(res.body.friendsChatName).toBeNull();
+    expect(res.body.friendsChatOwner).toBeNull();
 
     const doc = await ChatChannelName.findOne({ communityId: community._id, channelType: 'fc' }).lean();
     expect(doc).toBeNull();

@@ -21,12 +21,20 @@ const MAX_NAME_LENGTH = 100;
  *  Group Ironman clan — all three are the same "clan chat" concept from this backend's point of
  *  view, so all map to 'cc'. Missing the latter two used to mean a message from a guest/GIM clan
  *  channel simply didn't match any key here and got silently dropped as unparseable, which looked
- *  like "clan chat stopped being recognized" for anyone chatting in one of those. */
+ *  like "clan chat stopped being recognized" for anyone chatting in one of those.
+ *
+ *  CLAN_MESSAGE is different again: it's RuneLite's type for a *system* message posted into the
+ *  player's own clan chat, not a real chat message — the plugin only ever forwards one under this
+ *  type when its own ClanBroadcastPatterns has recognized it as a level-up/drop broadcast (clan
+ *  staff-configurable, under in-game Clan Settings notices); every other CLAN_MESSAGE (member
+ *  joined/left, coffer donation, etc.) is filtered out client-side. Also maps to 'cc' — the plugin
+ *  attaches the same primary clan's `clanChat` container to it as a real CLAN_CHAT message. */
 const MESSAGE_TYPE_TO_CHANNEL_TYPE: Record<string, ChatChannelType> = {
   FRIENDSCHAT: 'fc',
   CLAN_CHAT: 'cc',
   CLAN_GUEST_CHAT: 'cc',
   CLAN_GIM_CHAT: 'cc',
+  CLAN_MESSAGE: 'cc',
 };
 
 /**
@@ -65,6 +73,10 @@ export interface RawChatRelayMessage {
 export interface ParsedChatMessage {
   channelType: ChatChannelType;
   chatName: string;
+  /** The Friends Chat owner's RSN (`friendsChat.owner`), when the plugin sent one — never set for
+   *  a 'cc' message. This, not `chatName`, is what a Friends Chat message is actually classified
+   *  by; see resolveChatBinding and ChatChannelName's doc comment for why. */
+  chatOwner?: string;
   sender: string;
   message: string;
   rankInfo: RankInfo | null;
@@ -129,6 +141,10 @@ export function parseChatRelayMessage(raw: unknown): ParsedChatMessage | null {
   const c = container as Record<string, unknown>;
   if (typeof c.name !== 'string' || !c.name.trim() || c.name.length > MAX_NAME_LENGTH) return null;
   const chatName = c.name.trim();
+  const chatOwner = channelType === 'fc' && typeof c.owner === 'string' && c.owner.trim()
+    && c.owner.length <= MAX_NAME_LENGTH
+    ? c.owner.trim()
+    : undefined;
 
   const rankInfo = channelType === 'fc'
     ? getFriendsChatRankInfo(typeof u.friendsChatRank === 'string' ? u.friendsChatRank : undefined)
@@ -137,6 +153,7 @@ export function parseChatRelayMessage(raw: unknown): ParsedChatMessage | null {
   return {
     channelType,
     chatName,
+    chatOwner,
     sender,
     message,
     rankInfo,
@@ -147,11 +164,17 @@ export function parseChatRelayMessage(raw: unknown): ParsedChatMessage | null {
   };
 }
 
-// ── Chat-name → community classification ────────────────────────────────────
+// ── Chat-name / chat-owner → community classification ───────────────────────
 
 interface ChannelBinding {
   communityId: string;
   channelType: ChatChannelType;
+}
+
+/** What `resolveChatBinding` actually keyed the match on — see `syncFriendsChatIdentity`, which
+ *  branches on this to either self-heal a drifted FC name or capture an owner for the first time. */
+export interface ResolvedChannelBinding extends ChannelBinding {
+  matchedBy: 'owner' | 'name';
 }
 
 const CACHE_TTL_MS = process.env.CHAT_RELAY_CACHE_TTL_MS !== undefined
@@ -161,7 +184,13 @@ const CACHE_TTL_MS = process.env.CHAT_RELAY_CACHE_TTL_MS !== undefined
 // Keyed by `${channelType}|${normalizedName}` rather than name alone — FC and CC are separate
 // in-game namespaces, so the same name can legitimately be registered as both at once (even to
 // different communities); collapsing them onto one key would make one silently shadow the other.
+// Holds every doc that currently has a `normalizedName` on file, 'fc' and 'cc' alike, regardless of
+// whether an 'fc' doc has *also* captured an owner — see resolveChatBinding for why an owner-
+// captured FC still needs this as a fallback, not just `ownerBindingCache`.
 let bindingCache = new Map<string, ChannelBinding>();
+// Friends-Chat-only: keyed by normalizedOwnerName alone (owner is a single global namespace,
+// unlike name which is scoped per channelType).
+let ownerBindingCache = new Map<string, ChannelBinding>();
 let bindingCacheAt = 0;
 
 function bindingCacheKey(normalizedName: string, channelType: ChatChannelType): string {
@@ -174,26 +203,106 @@ async function refreshBindingCacheIfStale(): Promise<void> {
   bindingCacheAt = now;
 
   try {
-    const entries = await ChatChannelName.find({}, { normalizedName: 1, communityId: 1, channelType: 1 }).lean();
-    bindingCache = new Map(
-      entries.map((e) => [
-        bindingCacheKey(e.normalizedName, e.channelType),
-        { communityId: e.communityId.toString(), channelType: e.channelType },
-      ]),
-    );
+    const entries = await ChatChannelName.find(
+      {},
+      { normalizedName: 1, normalizedOwnerName: 1, communityId: 1, channelType: 1 },
+    ).lean();
+    const nextBindingCache = new Map<string, ChannelBinding>();
+    const nextOwnerBindingCache = new Map<string, ChannelBinding>();
+    for (const e of entries) {
+      const binding: ChannelBinding = { communityId: e.communityId.toString(), channelType: e.channelType };
+      // Not mutually exclusive: an FC that has captured an owner keeps its (self-healed) name in
+      // `bindingCache` too, as a fallback for a message that doesn't carry a usable `chatOwner` —
+      // see resolveChatBinding.
+      if (e.channelType === 'fc' && e.normalizedOwnerName) {
+        nextOwnerBindingCache.set(e.normalizedOwnerName, binding);
+      }
+      if (e.normalizedName) {
+        nextBindingCache.set(bindingCacheKey(e.normalizedName, e.channelType), binding);
+      }
+    }
+    bindingCache = nextBindingCache;
+    ownerBindingCache = nextOwnerBindingCache;
   } catch (err) {
     logWarn(`Failed to refresh chat-relay binding cache: ${(err as Error).message}`);
   }
 }
 
-/** Resolves a parsed message's chat name + channel type to the community that registered it, or
- *  null if no community currently claims that (name, type) pair. */
+/**
+ * Resolves a parsed message to the community that registered its Friends/Clan Chat, or null if no
+ * community currently claims it. A Friends Chat message with a `chatOwner` is matched against that
+ * owner first — the trust anchor for any FC that has one on file, since (unlike its name) an
+ * owner's RSN doesn't change when they rename the chat — falling back to matching by `chatName`
+ * whenever the owner check doesn't hit: an FC that hasn't captured an owner yet, a message that
+ * didn't carry one, or (deliberately tolerated) one whose `chatOwner` doesn't match what's on file
+ * for some other reason. The name fallback still works for an owner-captured FC too, as long as
+ * its self-healed `name` is current — owner is preferred when available, but never the *only* way
+ * in, since an FC that stops resolving at all is worse than one that's briefly reachable by a
+ * slightly-behind name. Clan Chat is always matched by name.
+ */
 export async function resolveChatBinding(
   chatName: string,
   channelType: ChatChannelType,
-): Promise<ChannelBinding | null> {
+  chatOwner?: string,
+): Promise<ResolvedChannelBinding | null> {
   await refreshBindingCacheIfStale();
-  return bindingCache.get(bindingCacheKey(normalizeChatChannelName(chatName), channelType)) ?? null;
+
+  if (channelType === 'fc' && chatOwner) {
+    const byOwner = ownerBindingCache.get(normalizeChatChannelName(chatOwner));
+    if (byOwner) return { ...byOwner, matchedBy: 'owner' };
+  }
+
+  const byName = bindingCache.get(bindingCacheKey(normalizeChatChannelName(chatName), channelType));
+  return byName ? { ...byName, matchedBy: 'name' } : null;
+}
+
+/**
+ * Keeps a community's registered Friends Chat identity in sync with live traffic, now that a
+ * message has been positively attributed to it — this is the whole reason FC classification
+ * doesn't need `name` to stay fixed once an owner is on file:
+ *  - Matched by **owner** (steady state): the owner is free to rename their FC at any time without
+ *    breaking anything, but the registered `name`/`normalizedName` — shown back in chat-config, the
+ *    chatbox picker, and the Discord relay line prefix — would otherwise silently go stale. Write
+ *    the live name back whenever it's drifted from what's on file.
+ *  - Matched by **name** (this FC hasn't captured an owner yet — either registered before this
+ *    field existed, or the owner hasn't re-saved chat-config since): if this particular message
+ *    happens to carry an owner value, capture it now. From that point on this community's FC no
+ *    longer depends on its name staying fixed at all.
+ * Best-effort by design: a failure here (including a duplicate-key race against the
+ * `normalizedOwnerName` index, if two communities' messages somehow ever claimed the same owner)
+ * just leaves the name/owner stale until the next message — it must never fail the relay call that
+ * triggered it.
+ */
+async function syncFriendsChatIdentity(
+  communityId: string,
+  parsed: Pick<ParsedChatMessage, 'chatName' | 'chatOwner'>,
+  matchedBy: 'owner' | 'name',
+): Promise<void> {
+  try {
+    if (matchedBy === 'owner') {
+      const normalizedLiveName = normalizeChatChannelName(parsed.chatName);
+      await ChatChannelName.updateOne(
+        { communityId, channelType: 'fc', normalizedName: { $ne: normalizedLiveName } },
+        { $set: { name: parsed.chatName, normalizedName: normalizedLiveName } },
+      );
+    } else if (parsed.chatOwner) {
+      await ChatChannelName.updateOne(
+        { communityId, channelType: 'fc', ownerName: { $exists: false } },
+        {
+          $set: {
+            ownerName: parsed.chatOwner,
+            normalizedOwnerName: normalizeChatChannelName(parsed.chatOwner),
+            // Leaving name-trust behind now that an owner is on file — see ChatChannelName's
+            // `nameTrustEligible` doc comment for why this has to be an explicit flag flip rather
+            // than just the presence of `ownerName`.
+            nameTrustEligible: false,
+          },
+        },
+      );
+    }
+  } catch (err) {
+    logWarn(`Failed to sync Friends Chat identity for community ${communityId}: ${(err as Error).message}`);
+  }
 }
 
 // ── Source tracking (in-memory, for the admin block-list) ───────────────────
@@ -292,17 +401,24 @@ export async function handleChatRelayPayload(rawMessage: unknown, sourceIp: stri
     return { status: 'dropped', reason: 'duplicate' };
   }
 
-  // Looked up by (name, type) together — see ChatChannelName's doc comment for why that pair,
-  // not the name alone, is the trust mechanism this relay's classification relies on. A name
-  // registered as one type but claimed as the other (misconfigured or spoofed) simply won't
-  // resolve, and is dropped the same as a name nobody has registered at all.
-  const binding = await resolveChatBinding(parsed.chatName, parsed.channelType);
+  // See ChatChannelName's doc comment + resolveChatBinding for why Friends Chat is trusted by
+  // owner (once captured) rather than name, and Clan Chat still by (name, type) together. A name
+  // or owner registered as/for one type but claimed as the other (misconfigured or spoofed)
+  // simply won't resolve, and is dropped the same as one nobody has registered at all.
+  const binding = await resolveChatBinding(parsed.chatName, parsed.channelType, parsed.chatOwner);
   if (!binding) {
     return { status: 'dropped', reason: 'unrecognized-source' };
   }
 
   const community = await Community.findById(binding.communityId);
   if (!community) return { status: 'dropped', reason: 'unrecognized-source' };
+
+  if (binding.channelType === 'fc') {
+    // Awaited (not fire-and-forget) so the identity update is visible by the time this call
+    // resolves, but internally best-effort — see syncFriendsChatIdentity's own try/catch, which
+    // never lets this delay-turned-failure drop the message it rode in on.
+    await syncFriendsChatIdentity(binding.communityId, parsed, binding.matchedBy);
+  }
 
   if (isBlockedSource(community, sourceIp, parsed.sender)) {
     return { status: 'dropped', reason: 'blocked' };
@@ -361,7 +477,10 @@ export async function handleChatRelayPayload(rawMessage: unknown, sourceIp: stri
 /** Validates a candidate FC/CC name isn't already registered — as that *same* channel type — to a
  *  *different* community, for the PUT /communities/:id/chat-config route. Registering the same
  *  name to the same community again (e.g. re-saving unchanged settings) is allowed, and so is an
- *  FC and a CC sharing a name (they're separate in-game namespaces — see ChatChannelName). */
+ *  FC and a CC sharing a name (they're separate in-game namespaces — see ChatChannelName).
+ *  Generic over both channel types, but the route below only actually calls this for `'cc'` now —
+ *  Friends Chat registration goes through `resolveChatChannelOwnerField` instead (see the "Friends
+ *  Chat owner registration" section further down). */
 export async function isChatChannelNameTaken(
   normalizedName: string,
   channelType: ChatChannelType,
@@ -435,6 +554,10 @@ export async function applyChatChannelNameUpdate(
   if (update.action === 'set') {
     set.name = update.value;
     set.normalizedName = normalizeChatChannelName(update.value);
+    // This path is CC-only in practice (see this function's doc comment) — a CC doc never has an
+    // `ownerName`, so it's always name-trust eligible. See ChatChannelName's `nameTrustEligible`
+    // doc comment for why this has to be an explicit flag rather than derived from `ownerName`.
+    set.nameTrustEligible = true;
   }
   if (displayNameUpdate.action === 'set') set.displayName = displayNameUpdate.value;
   else if (displayNameUpdate.action === 'clear') unset.displayName = '';
@@ -455,6 +578,91 @@ export async function applyChatChannelNameUpdate(
     // exists (no name registered means there's nothing to attach a display name to).
     await ChatChannelName.updateOne(
       { communityId, channelType },
+      { ...(Object.keys(set).length ? { $set: set } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) },
+    );
+  }
+}
+
+// ── Friends Chat owner registration (PUT /communities/:id/chat-config) ──────
+//
+// Unlike Clan Chat, which is still registered and matched by name via the two helpers above,
+// Friends Chat is registered by its **owner's RSN** — see ChatChannelName's doc comment for why.
+// The counterparts below are FC-only (no channelType parameter) and never touch `name`; that field
+// is written only by chatRelay's own `syncFriendsChatIdentity`, off live traffic.
+
+/** Validates a candidate FC owner RSN isn't already registered to a *different* community, for the
+ *  PUT /communities/:id/chat-config route. Re-registering the same owner to the same community
+ *  again (e.g. re-saving unchanged settings) is allowed. */
+export async function isChatChannelOwnerTaken(
+  normalizedOwnerName: string,
+  byOtherThanCommunityId: Types.ObjectId,
+): Promise<boolean> {
+  const existing = await ChatChannelName.findOne({ normalizedOwnerName, channelType: 'fc' }).lean();
+  return !!existing && !existing.communityId.equals(byOtherThanCommunityId);
+}
+
+/** Same set/clear/skip/invalid/taken resolution as `resolveChatChannelNameField`, but for the FC
+ *  owner field instead of a name. */
+export async function resolveChatChannelOwnerField(
+  raw: unknown,
+  communityId: Types.ObjectId,
+): Promise<ChatChannelNameFieldUpdate> {
+  if (raw === undefined) return { action: 'skip' };
+  if (typeof raw !== 'string') return { action: 'invalid' };
+
+  const trimmed = raw.trim();
+  if (!trimmed) return { action: 'clear' };
+  if (trimmed.length > MAX_CHAT_CHANNEL_NAME_LENGTH) return { action: 'invalid' };
+
+  const taken = await isChatChannelOwnerTaken(normalizeChatChannelName(trimmed), communityId);
+  if (taken) return { action: 'taken' };
+  return { action: 'set', value: trimmed };
+}
+
+/** Applies an already-validated ChatChannelNameFieldUpdate for the FC `ownerName`
+ *  ('invalid'/'taken' are no-ops here — callers must have handled those before calling this),
+ *  plus an optional `displayNameUpdate` applied in the same write. Deliberately never touches
+ *  `name`/`normalizedName`: those are populated (and kept in sync) by chatRelay's own
+ *  `syncFriendsChatIdentity` off the community's first/next relayed message, not by this route. */
+export async function applyChatChannelOwnerUpdate(
+  communityId: Types.ObjectId,
+  update: ChatChannelNameFieldUpdate,
+  displayNameUpdate: ChatChannelNameFieldUpdate = { action: 'skip' },
+): Promise<void> {
+  if (update.action === 'clear') {
+    await ChatChannelName.deleteOne({ communityId, channelType: 'fc' });
+    return;
+  }
+
+  const set: Record<string, unknown> = {};
+  const unset: Record<string, ''> = {};
+  if (update.action === 'set') {
+    set.ownerName = update.value;
+    set.normalizedOwnerName = normalizeChatChannelName(update.value);
+    // An owner is now on file, so this doc leaves name-trust behind (see ChatChannelName's
+    // `nameTrustEligible` doc comment for why this has to be an explicit flag flip rather than
+    // just the presence of `ownerName`).
+    set.nameTrustEligible = false;
+  }
+  if (displayNameUpdate.action === 'set') set.displayName = displayNameUpdate.value;
+  else if (displayNameUpdate.action === 'clear') unset.displayName = '';
+
+  if (update.action === 'set') {
+    // Upsert path: a fresh (or changed) owner is being set, so it's safe to create the doc if it
+    // doesn't exist yet.
+    await ChatChannelName.findOneAndUpdate(
+      { communityId, channelType: 'fc' },
+      {
+        $set: { communityId, channelType: 'fc', ...set },
+        ...(Object.keys(unset).length ? { $unset: unset } : {}),
+      },
+      { upsert: true },
+    );
+  } else if (Object.keys(set).length || Object.keys(unset).length) {
+    // owner itself is unchanged ('skip') — only touch displayName, and only on a doc that already
+    // exists (no owner registered means there's nothing to attach a display name to).
+    await ChatChannelName.updateOne(
+      { communityId, channelType: 'fc' },
       { ...(Object.keys(set).length ? { $set: set } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) },
     );
   }

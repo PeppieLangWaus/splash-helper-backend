@@ -1,0 +1,56 @@
+name: Render item icons
+
+# Renders the OSRS item icon set (scripts/render-item-icons.ts, see scripts/item-icons/README.md)
+# from the latest live OpenRS2 cache and publishes it as this repo's "item-icons-latest" GitHub
+# Release asset, which the Dockerfile fetches pre-rendered at image-build time.
+#
+# This used to run inside the Docker image build itself (JDK + Gradle + a live ~180MB cache
+# download on every deploy), which was unreliable: it added minutes to every backend redeploy, a
+# single flaky download hard-failed the whole build, and a BuildKit cache mount meant to skip
+# re-rendering on unchanged builds didn't reliably survive between Coolify redeploys on the same
+# host. Running it here instead decouples the (slow, occasionally flaky) render from routine
+# backend deploys — OSRS updates roughly weekly, so there's no reason for every production deploy
+# to redo this.
+on:
+  schedule:
+    # Wednesdays 20:00 UTC — a few hours after OSRS's usual Wednesday update.
+    - cron: '0 20 * * 3'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # to create/update the item-icons-latest release
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - run: npm ci
+
+      - name: Render icons
+        run: npm run render-item-icons
+
+      - name: Package icons
+        run: tar -czf item-icons.tar.gz -C data/item-icons .
+
+      - name: Publish item-icons-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view item-icons-latest >/dev/null 2>&1; then
+            gh release upload item-icons-latest item-icons.tar.gz --clobber
+          else
+            gh release create item-icons-latest item-icons.tar.gz \
+              --title "Item icons (latest)" \
+              --notes "Auto-published by .github/workflows/render-item-icons.yml — do not delete, the Dockerfile fetches this asset at image-build time."
+          fi

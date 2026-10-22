@@ -31,10 +31,12 @@ router.get('/', async (_req: Request, res: Response): Promise<void> => {
     const id = n.communityId.toString();
     const entry = byCommunity.get(id) ?? { friendsChatName: null, friendsChatDisplayName: null, clanChatName: null };
     if (n.channelType === 'fc') {
-      entry.friendsChatName = n.name;
+      // `name` is null until this FC's first message has been relayed and self-synced (see
+      // chatRelay.ts's syncFriendsChatIdentity) — a freshly owner-registered FC has none yet.
+      entry.friendsChatName = n.name ?? null;
       entry.friendsChatDisplayName = n.displayName ?? null;
     } else {
-      entry.clanChatName = n.name;
+      entry.clanChatName = n.name ?? null;
     }
     byCommunity.set(id, entry);
   }

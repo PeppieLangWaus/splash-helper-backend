@@ -12,24 +12,6 @@ COPY src ./src
 
 RUN npm run build
 
-# Renders OSRS item icons into data/item-icons/ at build time (scripts/render-item-icons.ts —
-# see scripts/item-icons/README.md) rather than committing ~4000 generated PNGs to the repo.
-# Needs a JDK for the Gradle-based renderer, and downloads a live cache (~180MB) from OpenRS2
-# plus the Gradle distribution and net.runelite:cache's own dependencies on top of that — this
-# stage needs network access and adds a few minutes to every image build.
-#
-# --build-cache points render-item-icons.ts at a BuildKit cache mount: OpenRS2's cache only
-# actually changes when the game itself updates, so most builds/redeploys can skip the download +
-# render and reuse whatever was saved there last time. The mount persists in BuildKit's cache
-# store on the build host across separate `docker build` runs (i.e. across Coolify redeploys on
-# the same server) — Coolify itself isn't involved in keeping it around, so if the cache is ever
-# pruned or a build lands on a different host, that build just renders from scratch and
-# repopulates it. Requires a BuildKit-enabled builder, which is Docker's default since Engine 23.
-RUN apk add --no-cache openjdk17
-COPY scripts ./scripts
-RUN --mount=type=cache,target=/build-cache,id=item-icons-build-cache \
-    npm run render-item-icons -- --build-cache /build-cache
-
 # ── Stage 2: runtime ───────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
@@ -41,7 +23,25 @@ COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/data ./data
+
+# Item icon PNGs (data/item-icons/, served by src/routes/items.ts's GET /items/:id/icon) used to
+# be rendered here at build time — a JDK + Gradle stage that downloaded a live ~180MB OSRS cache
+# from OpenRS2 on every image build. That was unreliable in practice: it added minutes to every
+# deploy, a single flaky download hard-failed the whole build, and the BuildKit cache mount meant
+# to skip re-rendering on unchanged builds didn't reliably survive between Coolify redeploys on
+# the same host (observed emptied out in well under a day). See scripts/item-icons/README.md.
+#
+# The render now runs on its own schedule via .github/workflows/render-item-icons.yml, which
+# publishes the result as this repo's "item-icons-latest" GitHub Release asset. This just fetches
+# that pre-rendered tarball instead — no JDK, no live game-cache download, no build-time renderer.
+# `ADD` from a remote URL is layer-cached by BuildKit on the target's ETag/Last-Modified (syntax
+# 1.4+, declared above), so a build only re-downloads when the workflow has actually published a
+# new render, not on every deploy. Trigger the workflow manually (Actions tab, "Run workflow")
+# after an OSRS update if you don't want to wait for its weekly schedule.
+ADD https://github.com/PeppieLangWaus/splash-helper-backend/releases/download/item-icons-latest/item-icons.tar.gz /tmp/item-icons.tar.gz
+RUN mkdir -p data/item-icons && \
+    tar -xzf /tmp/item-icons.tar.gz -C data/item-icons && \
+    rm /tmp/item-icons.tar.gz
 
 EXPOSE 3000
 

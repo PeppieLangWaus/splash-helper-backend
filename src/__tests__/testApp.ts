@@ -14,6 +14,7 @@ import chatChannelsRouter from '../routes/chatChannels';
 import chatRelayRouter from '../routes/chatRelay';
 import itemsRouter from '../routes/items';
 import linkPreviewRouter from '../routes/linkPreview';
+import { notFoundLogger, invalidBodyLogger } from '../middleware/invalidRequestLogger';
 
 export function createTestApp() {
   const app = express();
@@ -21,7 +22,12 @@ export function createTestApp() {
   // (see routes/splashers.ts vote endpoints).
   app.set('trust proxy', 1);
   app.use(cors());
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({
+    limit: '10mb',
+    verify: (req, _res, buf) => {
+      (req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8').slice(0, 2000);
+    },
+  }));
   app.use('/api/splashers', splashersRouter);
   app.use('/api/sessions', sessionsRouter);
   app.use('/api/auth', authRouter);
@@ -33,5 +39,7 @@ export function createTestApp() {
   app.use('/api/items', itemsRouter);
   app.use('/api/link-preview', linkPreviewRouter);
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+  app.use(notFoundLogger);
+  app.use(invalidBodyLogger);
   return app;
 }
