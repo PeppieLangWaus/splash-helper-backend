@@ -13,6 +13,7 @@ import communityBotRouter from '../routes/communityBot';
 import chatChannelsRouter from '../routes/chatChannels';
 import chatRelayRouter from '../routes/chatRelay';
 import itemsRouter from '../routes/items';
+import linkPreviewRouter from '../routes/linkPreview';
 import { notFoundLogger, invalidBodyLogger } from '../middleware/invalidRequestLogger';
 
 export function createTestApp() {
@@ -36,6 +37,7 @@ export function createTestApp() {
   app.use('/api/chat-channels', chatChannelsRouter);
   app.use('/api/chat-relay', chatRelayRouter);
   app.use('/api/items', itemsRouter);
+  app.use('/api/link-preview', linkPreviewRouter);
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   app.use(notFoundLogger);
   app.use(invalidBodyLogger);

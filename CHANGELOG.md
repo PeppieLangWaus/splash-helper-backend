@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-22
+### Added
+- `GET /link-preview` resolves OSRS Wiki articles, Discord invites and RuneLite Plugin Hub listings to a title, summary and thumbnail for the frontend's hover previews, caching every result (including misses) in Mongo so each link hits its upstream only once per TTL window.
 ## [1.4.0] - 2026-09-30
 ### Added
 - Track and store `playerDeaths` in session data — the plugin has sent this in the same session payload as `level99Count` since PR #3, but the backend never picked it up; persisted on archived sessions and exposed through the existing `/splashers` endpoints.
