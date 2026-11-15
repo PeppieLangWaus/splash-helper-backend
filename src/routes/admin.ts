@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { Types } from 'mongoose';
 import { requireAdmin } from '../middleware/auth';
+import { rateLimit } from '../middleware/rateLimit';
 import { User } from '../models/User';
 import { ArchivedSession } from '../models/ArchivedSession';
 import { Community } from '../models/Community';
@@ -18,6 +19,7 @@ const PASSWORD_RESET_EXPIRY_MS = 30 * 60 * 1000;
 
 // All routes require admin JWT
 router.use(requireAdmin);
+router.use(rateLimit({ windowMs: 60 * 1000, max: 300 }));
 
 /**
  * GET /api/admin/users

@@ -7,8 +7,10 @@ import { SplashEntry } from '../types';
 import { enqueueWebhookNotification } from '../services/discordWebhook';
 import { MIN_ARCHIVABLE_SESSION_DURATION_MS } from '../websocket/handlers';
 import { requireAuth } from '../middleware/auth';
+import { rateLimit } from '../middleware/rateLimit';
 
 const router = Router();
+router.use(rateLimit({ windowMs: 60 * 1000, max: 60 }));
 
 /**
  * POST /sessions/upload
@@ -32,7 +34,11 @@ router.post('/upload', requireAuth, async (req: Request, res: Response): Promise
     let skipped = 0;
 
     for (const entry of entries) {
-      if (!entry?.sessionId || !entry?.session?.playerName) {
+      if (
+        typeof entry?.sessionId !== 'string' || !entry.sessionId ||
+        typeof entry?.session?.playerName !== 'string' || !entry.session.playerName ||
+        typeof entry?.createdTimestamp !== 'number' || typeof entry?.finalizedTimestamp !== 'number'
+      ) {
         skipped++;
         continue;
       }

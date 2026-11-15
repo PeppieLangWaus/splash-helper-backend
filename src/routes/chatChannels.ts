@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { ChatChannelName } from '../models/ChatChannelName';
 import { Community } from '../models/Community';
+import { rateLimit } from '../middleware/rateLimit';
 
 const router = Router();
+router.use(rateLimit({ windowMs: 60 * 1000, max: 300 }));
 
 /**
  * GET /chat-channels

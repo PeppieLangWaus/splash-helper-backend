@@ -8,6 +8,7 @@ import { SecurityEvent } from '../models/SecurityEvent';
 import { ArchivedSession } from '../models/ArchivedSession';
 import { BankTicket, BankTicketType } from '../models/BankTicket';
 import { requireCommunityToken } from '../middleware/auth';
+import { rateLimit } from '../middleware/rateLimit';
 import { assignDefaultRank } from '../services/ranks';
 import { computeTotalEarnedGp, computeTotalPaidOutGp } from '../services/income';
 import { getAll as getActiveSessions } from '../websocket/sessionManager';
@@ -24,7 +25,9 @@ const router = Router();
  * one place someone could try pairing a Discord server with a community's data using a
  * guessed/stolen token.
  */
-router.post('/verify-setup', async (req: Request, res: Response): Promise<void> => {
+const verifySetupLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+
+router.post('/verify-setup', verifySetupLimiter, async (req: Request, res: Response): Promise<void> => {
   const { communityName, apiToken, guildId, discordUserId } = req.body as {
     communityName?: string;
     apiToken?: string;
@@ -69,6 +72,7 @@ router.post('/verify-setup', async (req: Request, res: Response): Promise<void> 
 // apiToken alone. Every handler operates strictly on req.community, never a client-supplied
 // community id, so one community's token can never read or mutate another's data.
 router.use(requireCommunityToken);
+router.use(rateLimit({ windowMs: 60 * 1000, max: 300 }));
 
 /**
  * GET /api/community-bot/discord-config
@@ -98,25 +102,26 @@ router.put('/discord-config', async (req: Request, res: Response): Promise<void>
     bankManagerRoleIds,
     minPayoutGp,
   } = req.body as Partial<{
-    guildId: string;
+    guildId: unknown;
     supportRoleIds: string[];
-    supportTicketChannelId: string;
-    splasherLinkChannelId: string;
-    historyChannelId: string;
-    activeWorldsChannelId: string;
+    supportTicketChannelId: unknown;
+    splasherLinkChannelId: unknown;
+    historyChannelId: unknown;
+    activeWorldsChannelId: unknown;
     autoAddSplashers: boolean;
-    bankChannelId: string;
+    bankChannelId: unknown;
     bankManagerRoleIds: string[];
     minPayoutGp: number;
   }>;
 
-  if (!guildId) {
+  if (typeof guildId !== 'string' || !guildId) {
     res.status(400).json({ error: 'guildId is required' });
     return;
   }
 
   const validMinPayout =
     typeof minPayoutGp === 'number' && Number.isFinite(minPayoutGp) && minPayoutGp >= 0;
+  const asString = (v: unknown) => (typeof v === 'string' ? v : undefined);
 
   const config = await DiscordServerConfig.findOneAndUpdate(
     { communityId },
@@ -124,12 +129,12 @@ router.put('/discord-config', async (req: Request, res: Response): Promise<void>
       communityId,
       guildId,
       supportRoleIds: Array.isArray(supportRoleIds) ? supportRoleIds : [],
-      supportTicketChannelId,
-      splasherLinkChannelId,
-      historyChannelId,
-      activeWorldsChannelId,
+      supportTicketChannelId: asString(supportTicketChannelId),
+      splasherLinkChannelId: asString(splasherLinkChannelId),
+      historyChannelId: asString(historyChannelId),
+      activeWorldsChannelId: asString(activeWorldsChannelId),
       autoAddSplashers: !!autoAddSplashers,
-      bankChannelId,
+      bankChannelId: asString(bankChannelId),
       bankManagerRoleIds: Array.isArray(bankManagerRoleIds) ? bankManagerRoleIds : [],
       minPayoutGp: validMinPayout ? minPayoutGp : 10_000_000,
     },
@@ -185,9 +190,9 @@ router.get('/sessions/history', async (req: Request, res: Response): Promise<voi
  * The bot polls this for applications that came in through the website rather than /link.
  */
 router.get('/applications', async (req: Request, res: Response): Promise<void> => {
-  const { status } = req.query as { status?: string };
+  const { status } = req.query as { status?: unknown };
   const filter: Record<string, unknown> = { communityId: req.community!._id };
-  if (status) filter.status = status;
+  if (typeof status === 'string' && status) filter.status = status;
   const applications = await SplasherApplication.find(filter).lean();
   res.json({ applications });
 });
@@ -237,8 +242,8 @@ router.post('/applications/:appId/resolve', async (req: Request, res: Response):
  * pending logic as the website's POST /communities/:id/apply, scoped to this token's community.
  */
 router.post('/link-account', async (req: Request, res: Response): Promise<void> => {
-  const { token, rsn, discordUserId } = req.body as { token?: string; rsn?: string; discordUserId?: string };
-  if (!token || !rsn) {
+  const { token, rsn, discordUserId } = req.body as { token?: unknown; rsn?: unknown; discordUserId?: unknown };
+  if (typeof token !== 'string' || typeof rsn !== 'string' || !token || !rsn) {
     res.status(400).json({ error: 'token and rsn are required' });
     return;
   }
@@ -249,7 +254,7 @@ router.post('/link-account', async (req: Request, res: Response): Promise<void> 
     return;
   }
 
-  if (discordUserId && user.discordUserId !== discordUserId) {
+  if (typeof discordUserId === 'string' && discordUserId && user.discordUserId !== discordUserId) {
     user.discordUserId = discordUserId;
     await user.save();
   }
@@ -300,8 +305,8 @@ async function findLinkedMember(communityId: Types.ObjectId, memberUserIds: Type
  * paid out, and what's still available to pay out.
  */
 router.get('/income', async (req: Request, res: Response): Promise<void> => {
-  const { discordUserId } = req.query as { discordUserId?: string };
-  if (!discordUserId) {
+  const { discordUserId } = req.query as { discordUserId?: unknown };
+  if (typeof discordUserId !== 'string' || !discordUserId) {
     res.status(400).json({ error: 'discordUserId is required' });
     return;
   }

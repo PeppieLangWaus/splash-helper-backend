@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { Types } from 'mongoose';
 import { requireAuth } from '../middleware/auth';
+import { rateLimit } from '../middleware/rateLimit';
 import { User } from '../models/User';
 import { Community } from '../models/Community';
 import { ArchivedSession } from '../models/ArchivedSession';
@@ -25,6 +26,7 @@ import { randomBytes } from 'crypto';
 const router = Router();
 
 router.use(requireAuth);
+router.use(rateLimit({ windowMs: 60 * 1000, max: 300 }));
 
 /**
  * POST /api/communities
@@ -392,8 +394,8 @@ router.put('/:communityId/members/:username/rank', async (req: Request, res: Res
     return;
   }
 
-  const { rankId } = req.body as { rankId?: string };
-  if (!rankId) {
+  const { rankId } = req.body as { rankId?: unknown };
+  if (typeof rankId !== 'string' || !rankId) {
     res.status(400).json({ error: 'rankId is required' });
     return;
   }
