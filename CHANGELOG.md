@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-15
+### Fixed
+- Update `src/__tests__/services/chatRelay.test.ts` and `src/__tests__/routes/chatRelay.test.ts` to the current nested plugin message shape (`message`/`user`/`friendsChat`/`clanChat`) — they still built the flat shape from before that migration, so every case in both files failed against the real parser. Also updates the clan-rank-tier test to match the current contract: a custom tier's title now always comes through, only its icon is omitted.
+
 ## [1.6.0] - 2026-11-15
 ### Added
 - Rate-limit `/auth/login`, `/auth/setup/:token` and WebSocket `AUTH` attempts per IP, and cap incoming WebSocket frames at 256KB.
