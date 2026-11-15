@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-11-15
+### Fixed
+- Run the Test workflow's Jest suite with `--runInBand`. All test files share one in-memory MongoDB instance from `globalSetup`, so Jest's default parallel workers were racing each other's `clearCollections()`/writes across suites — on CI's runners this failed the large majority of the suite.
+
 ## [1.6.1] - 2026-11-15
 ### Fixed
 - Cap the email address length checked against `EMAIL_RE` in `/auth/email` before running the regex, closing a ReDoS where both halves of the pattern could match repeated `.` characters.
