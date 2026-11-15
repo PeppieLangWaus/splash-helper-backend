@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ## [1.6.2] - 2026-11-15
 ### Fixed
+- Pin `mongoose` to `9.9.2`, exact (was `^9.11.4`). Every mongoose version from 9.10.0 onward sends a `driverInfo` client-metadata option the `mongodb` driver can't handle correctly against current MongoDB server versions — the server rejects the handshake (`MongoServerError: Missing required sub-document 'driver'...`, code 183) and every connection just hangs. This was breaking staging and failing CI's "test" check outright. 9.9.2 still carries the `sanitizeFilter`/`countDocuments` and `$nor` NoSQL-injection fixes; it's missing only the connection-level `sanitizeFilter` fix (CVE-2026-125119), which this session's earlier input-validation fixes (typeof checks before every Mongoose filter) already cover for this app's actual routes.
 - Run the Test workflow's Jest suite with `--runInBand`. All test files share one in-memory MongoDB instance from `globalSetup`, so Jest's default parallel workers were racing each other's `clearCollections()`/writes across suites — on CI's runners this failed the large majority of the suite.
 
 ## [1.6.1] - 2026-11-15
