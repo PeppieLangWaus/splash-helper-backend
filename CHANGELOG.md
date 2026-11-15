@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-15
+### Added
+- Rate-limit `/auth/login`, `/auth/setup/:token` and WebSocket `AUTH` attempts per IP, and cap incoming WebSocket frames at 256KB.
+### Fixed
+- Require a login for `POST /sessions/upload`; regular users can only import their own sessions, and only admins can create users through it.
+- Refuse to start in production without a CORS origin list, or with `SETUP_LINK_SECRET` missing or equal to `JWT_SECRET`.
+- Mount the `/dev` routes only when `NODE_ENV` is exactly `development`.
+
 ## [1.5.0] - 2026-10-22
 ### Added
 - `GET /link-preview` resolves OSRS Wiki articles, Discord invites and RuneLite Plugin Hub listings to a title, summary and thumbnail for the frontend's hover previews, caching every result (including misses) in Mongo so each link hits its upstream only once per TTL window.
