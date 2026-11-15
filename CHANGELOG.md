@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-15
+### Fixed
+- Cap the email address length checked against `EMAIL_RE` in `/auth/email` before running the regex, closing a ReDoS where both halves of the pattern could match repeated `.` characters.
+- Add an explicit `permissions: contents: read` block to the Test GitHub Actions workflow, instead of relying on the (broader) repository default.
+
 ## [1.6.0] - 2026-11-15
 ### Added
 - Rate-limit `/auth/login`, `/auth/setup/:token` and WebSocket `AUTH` attempts per IP, and cap incoming WebSocket frames at 256KB.
