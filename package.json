@@ -1,6 +1,6 @@
 {
   "name": "splash-helper-backend",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Splash Helper Backend API",
   "main": "dist/app.js",
   "scripts": {
@@ -42,7 +42,7 @@
     "express": "^4.22.3",
     "jsonwebtoken": "^9.0.3",
     "lowdb": "^1.0.0",
-    "mongoose": "^9.11.4",
+    "mongoose": "9.9.2",
     "multer": "^2.5.0",
     "resend": "^6.20.0",
     "uuid": "^14.0.0",

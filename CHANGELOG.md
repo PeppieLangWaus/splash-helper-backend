@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-15
+### Fixed
+- Pin `mongoose` to `9.9.2`, exact (was `^9.11.4`). Every mongoose version from 9.10.0 onward sends a `driverInfo` client-metadata option the `mongodb` driver can't handle correctly against current MongoDB server versions — the server rejects the handshake (`MongoServerError: Missing required sub-document 'driver'...`, code 183) and every connection just hangs. This was breaking staging and failing CI's "test" check outright. 9.9.2 still carries the `sanitizeFilter`/`countDocuments` and `$nor` NoSQL-injection fixes; it's missing only the connection-level `sanitizeFilter` fix (CVE-2026-125119), which this session's earlier input-validation fixes (typeof checks before every Mongoose filter) already cover for this app's actual routes.
+
 ## [1.6.0] - 2026-11-15
 ### Added
 - Rate-limit `/auth/login`, `/auth/setup/:token` and WebSocket `AUTH` attempts per IP, and cap incoming WebSocket frames at 256KB.
