@@ -51,15 +51,14 @@ beforeEach(async () => {
   resetChatRelayDedupState();
 });
 
+/** Matches the current RawChatRelayMessage shape — same convention as the sibling chatRelay*
+ *  test files. An override replaces its top-level key wholesale (e.g. `message` replaces the
+ *  whole message object), not a deep merge. */
 function makeRawMessage(overrides: Record<string, unknown> = {}): unknown {
   return {
-    id: 1417339442575,
-    timestamp: '2021-01-01T00:00:00.000000000Z',
-    chatType: 'FRIENDS',
-    chatName: 'Ardy Splash',
-    sender: 'Zezima',
-    rank: -1,
-    message: 'anyone selling nats?',
+    message: { id: 1417339442575, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'anyone selling nats?' },
+    user: { name: 'Zezima' },
+    friendsChat: { name: 'Ardy Splash' },
     ...overrides,
   };
 }
@@ -69,19 +68,35 @@ describe('parseChatRelayMessage', () => {
     expect(parseChatRelayMessage(makeRawMessage())).toEqual({
       channelType: 'fc',
       chatName: 'Ardy Splash',
+      chatOwner: undefined,
       sender: 'Zezima',
-      rank: -1,
       message: 'anyone selling nats?',
+      rankInfo: null,
+      sourceId: 1417339442575,
+      sourceTimestamp: 1_609_459_200,
+      sourceType: 'FRIENDSCHAT',
+      edited: false,
     });
   });
 
   it('parses a well-formed Clan message', () => {
-    expect(parseChatRelayMessage(makeRawMessage({ chatType: 'CLAN', chatName: 'Ardy Splash CC', rank: 100 }))).toEqual({
+    const parsed = parseChatRelayMessage(
+      makeRawMessage({
+        message: { id: 1417339442575, timestamp: 1_609_459_200, type: 'CLAN_CHAT', text: 'anyone selling nats?' },
+        clanChat: { name: 'Ardy Splash CC' },
+      }),
+    );
+    expect(parsed).toEqual({
       channelType: 'cc',
       chatName: 'Ardy Splash CC',
+      chatOwner: undefined,
       sender: 'Zezima',
-      rank: 100,
       message: 'anyone selling nats?',
+      rankInfo: null,
+      sourceId: 1417339442575,
+      sourceTimestamp: 1_609_459_200,
+      sourceType: 'CLAN_CHAT',
+      edited: false,
     });
   });
 
@@ -92,40 +107,74 @@ describe('parseChatRelayMessage', () => {
     expect(parseChatRelayMessage(42)).toBeNull();
   });
 
-  it('returns null for an unrecognized chatType', () => {
-    expect(parseChatRelayMessage(makeRawMessage({ chatType: 'TRADE' }))).toBeNull();
-    expect(parseChatRelayMessage(makeRawMessage({ chatType: undefined }))).toBeNull();
+  it('returns null for an unrecognized or missing message.type', () => {
+    expect(
+      parseChatRelayMessage(
+        makeRawMessage({ message: { id: 1, timestamp: 1, type: 'TRADE', text: 'anyone selling nats?' } }),
+      ),
+    ).toBeNull();
+    expect(
+      parseChatRelayMessage(
+        makeRawMessage({ message: { id: 1, timestamp: 1, type: undefined, text: 'anyone selling nats?' } }),
+      ),
+    ).toBeNull();
   });
 
-  it('returns null for a missing/blank/oversized chatName or sender', () => {
-    expect(parseChatRelayMessage(makeRawMessage({ chatName: '' }))).toBeNull();
-    expect(parseChatRelayMessage(makeRawMessage({ chatName: '   ' }))).toBeNull();
-    expect(parseChatRelayMessage(makeRawMessage({ chatName: 'a'.repeat(101) }))).toBeNull();
-    expect(parseChatRelayMessage(makeRawMessage({ sender: '' }))).toBeNull();
-    expect(parseChatRelayMessage(makeRawMessage({ sender: 'a'.repeat(101) }))).toBeNull();
+  it('returns null for a missing/blank/oversized chat name or sender', () => {
+    expect(parseChatRelayMessage(makeRawMessage({ friendsChat: { name: '' } }))).toBeNull();
+    expect(parseChatRelayMessage(makeRawMessage({ friendsChat: { name: '   ' } }))).toBeNull();
+    expect(parseChatRelayMessage(makeRawMessage({ friendsChat: { name: 'a'.repeat(101) } }))).toBeNull();
+    expect(parseChatRelayMessage(makeRawMessage({ user: { name: '' } }))).toBeNull();
+    expect(parseChatRelayMessage(makeRawMessage({ user: { name: 'a'.repeat(101) } }))).toBeNull();
   });
 
-  it('returns null for a non-numeric rank', () => {
-    expect(parseChatRelayMessage(makeRawMessage({ rank: '5' }))).toBeNull();
-    expect(parseChatRelayMessage(makeRawMessage({ rank: NaN }))).toBeNull();
+  it('does not reject the message for a malformed clanRank, it just omits rank info', () => {
+    // Unlike chatName/sender, an unparseable rank isn't fatal — see parseClanRankInfo and its
+    // call site in parseChatRelayMessage, which always returns the rest of the message.
+    const parsed = parseChatRelayMessage(
+      makeRawMessage({
+        message: { id: 1, timestamp: 1, type: 'CLAN_CHAT', text: 'anyone selling nats?' },
+        clanChat: { name: 'Ardy Splash CC' },
+        user: { name: 'Zezima', clanRank: { rank: '5', title: 'Boss' } },
+      }),
+    );
+    expect(parsed).not.toBeNull();
+    expect(parsed?.rankInfo).toBeNull();
   });
 
   it('returns null for empty/oversized message content', () => {
-    expect(parseChatRelayMessage(makeRawMessage({ message: '' }))).toBeNull();
-    expect(parseChatRelayMessage(makeRawMessage({ message: '   ' }))).toBeNull();
-    expect(parseChatRelayMessage(makeRawMessage({ message: 'a'.repeat(2001) }))).toBeNull();
+    expect(
+      parseChatRelayMessage(makeRawMessage({ message: { id: 1, timestamp: 1, type: 'FRIENDSCHAT', text: '' } })),
+    ).toBeNull();
+    expect(
+      parseChatRelayMessage(makeRawMessage({ message: { id: 1, timestamp: 1, type: 'FRIENDSCHAT', text: '   ' } })),
+    ).toBeNull();
+    expect(
+      parseChatRelayMessage(
+        makeRawMessage({ message: { id: 1, timestamp: 1, type: 'FRIENDSCHAT', text: 'a'.repeat(2001) } }),
+      ),
+    ).toBeNull();
   });
 
-  it('trims chatName, sender, and message', () => {
+  it('trims chat name, sender, and message', () => {
     const parsed = parseChatRelayMessage(
-      makeRawMessage({ chatName: '  Ardy Splash  ', sender: '  Zezima  ', message: '  hello  ' }),
+      makeRawMessage({
+        message: { id: 1417339442575, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: '  hello  ' },
+        user: { name: '  Zezima  ' },
+        friendsChat: { name: '  Ardy Splash  ' },
+      }),
     );
     expect(parsed).toEqual({
       channelType: 'fc',
       chatName: 'Ardy Splash',
+      chatOwner: undefined,
       sender: 'Zezima',
-      rank: -1,
       message: 'hello',
+      rankInfo: null,
+      sourceId: 1417339442575,
+      sourceTimestamp: 1_609_459_200,
+      sourceType: 'FRIENDSCHAT',
+      edited: false,
     });
   });
 });
@@ -233,6 +282,12 @@ describe('handleChatRelayPayload', () => {
     });
   }
 
+  /** The source-correlation arg, plus item-log's items/showQuantities (always undefined here —
+   *  nothing in this suite matches `!log`/`!pets`). */
+  function sourceArg(overrides: Partial<{ id: number; timestamp: number; type: string; edited: boolean }> = {}) {
+    return { id: 1417339442575, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', edited: false, ...overrides };
+  }
+
   it('drops content that does not look like plugin output', async () => {
     const result = await handleChatRelayPayload({ nonsense: true }, '1.2.3.4');
     expect(result).toEqual({ status: 'dropped', reason: 'invalid-format' });
@@ -241,7 +296,7 @@ describe('handleChatRelayPayload', () => {
   });
 
   it('drops a well-formed message whose chat name is not registered to any community', async () => {
-    const result = await handleChatRelayPayload(makeRawMessage({ chatName: 'Nobody Claims This' }), '1.2.3.4');
+    const result = await handleChatRelayPayload(makeRawMessage({ friendsChat: { name: 'Nobody Claims This' } }), '1.2.3.4');
     expect(result).toEqual({ status: 'dropped', reason: 'unrecognized-source' });
     expect(forwardChatWebhookPayload).not.toHaveBeenCalled();
     expect(broadcastChatMessage).not.toHaveBeenCalled();
@@ -257,7 +312,13 @@ describe('handleChatRelayPayload', () => {
     });
 
     // Registered as FC, but the message claims CLAN.
-    const result = await handleChatRelayPayload(makeRawMessage({ chatType: 'CLAN' }), '1.2.3.4');
+    const result = await handleChatRelayPayload(
+      makeRawMessage({
+        message: { id: 1417339442575, timestamp: 1_609_459_200, type: 'CLAN_CHAT', text: 'anyone selling nats?' },
+        clanChat: { name: 'Ardy Splash' },
+      }),
+      '1.2.3.4',
+    );
     expect(result).toEqual({ status: 'dropped', reason: 'unrecognized-source' });
     expect(broadcastChatMessage).not.toHaveBeenCalled();
   });
@@ -286,7 +347,10 @@ describe('handleChatRelayPayload', () => {
       'fc',
       'Zezima',
       'anyone selling nats?',
-      undefined, // rank -1 (unranked) has no resolvable icon
+      undefined, // unranked has no resolvable rank info
+      sourceArg(),
+      undefined,
+      undefined,
     );
   });
 
@@ -299,7 +363,7 @@ describe('handleChatRelayPayload', () => {
       normalizedName: 'ardy splash',
     });
 
-    await handleChatRelayPayload(makeRawMessage({ rank: 6 }), '1.2.3.4');
+    await handleChatRelayPayload(makeRawMessage({ user: { name: 'Zezima', friendsChatRank: 'GENERAL' } }), '1.2.3.4');
 
     expect(broadcastChatMessage).toHaveBeenCalledWith(
       (community._id as Types.ObjectId).toString(),
@@ -307,10 +371,13 @@ describe('handleChatRelayPayload', () => {
       'Zezima',
       'anyone selling nats?',
       { rank: 6, name: 'General', iconUrl: expect.stringContaining('General_clan_rank.png') },
+      sourceArg(),
+      undefined,
+      undefined,
     );
   });
 
-  it('resolves a named Clan rank to its display name + icon, and passes through an unnamed custom rank tier', async () => {
+  it('resolves a named Clan rank to its display name + icon, and passes through a custom rank tier with no icon', async () => {
     const community = await makeCommunity();
     await ChatChannelName.create({
       communityId: community._id,
@@ -319,26 +386,46 @@ describe('handleChatRelayPayload', () => {
       normalizedName: 'ardy splash cc',
     });
 
-    await handleChatRelayPayload(makeRawMessage({ chatType: 'CLAN', chatName: 'Ardy Splash CC', rank: 126 }), '1.2.3.4');
+    await handleChatRelayPayload(
+      makeRawMessage({
+        message: { id: 1417339442575, timestamp: 1_609_459_200, type: 'CLAN_CHAT', text: 'anyone selling nats?' },
+        clanChat: { name: 'Ardy Splash CC' },
+        user: { name: 'Zezima', clanRank: { rank: 126, title: 'Owner' } },
+      }),
+      '1.2.3.4',
+    );
     expect(broadcastChatMessage).toHaveBeenCalledWith(
       (community._id as Types.ObjectId).toString(),
       'cc',
       'Zezima',
       'anyone selling nats?',
       { rank: 126, name: 'Owner', iconUrl: expect.stringContaining('Clan_icon_-_Owner.png') },
+      sourceArg({ type: 'CLAN_CHAT' }),
+      undefined,
+      undefined,
     );
 
     jest.clearAllMocks();
     resetChatRelayDedupState();
 
-    // Rank 42 is one of a clan's own custom-titled tiers -- ClanRank.java has no fixed name for
-    // it, so it should broadcast with no rank info rather than a guessed name/icon.
-    await handleChatRelayPayload(makeRawMessage({ chatType: 'CLAN', chatName: 'Ardy Splash CC', rank: 42 }), '1.2.3.4');
+    // Rank 42 is one of a clan's own custom-titled tiers — no fixed icon, so the title still
+    // comes through but iconUrl is undefined (see rankIcons.ts's CLAN_RANK_ICONS).
+    await handleChatRelayPayload(
+      makeRawMessage({
+        message: { id: 1417339442576, timestamp: 1_609_459_201, type: 'CLAN_CHAT', text: 'anyone selling nats?' },
+        clanChat: { name: 'Ardy Splash CC' },
+        user: { name: 'Zezima', clanRank: { rank: 42, title: 'Veteran' } },
+      }),
+      '1.2.3.4',
+    );
     expect(broadcastChatMessage).toHaveBeenCalledWith(
       (community._id as Types.ObjectId).toString(),
       'cc',
       'Zezima',
       'anyone selling nats?',
+      { rank: 42, name: 'Veteran', iconUrl: undefined },
+      sourceArg({ id: 1417339442576, timestamp: 1_609_459_201, type: 'CLAN_CHAT' }),
+      undefined,
       undefined,
     );
   });
@@ -359,8 +446,14 @@ describe('handleChatRelayPayload', () => {
       normalizedName: 'ardy splash',
     });
 
-    const fcResult = await handleChatRelayPayload(makeRawMessage({ chatType: 'FRIENDS', chatName: 'Ardy Splash' }), '1.2.3.4');
-    const ccResult = await handleChatRelayPayload(makeRawMessage({ chatType: 'CLAN', chatName: 'Ardy Splash' }), '5.6.7.8');
+    const fcResult = await handleChatRelayPayload(makeRawMessage(), '1.2.3.4');
+    const ccResult = await handleChatRelayPayload(
+      makeRawMessage({
+        message: { id: 1417339442576, timestamp: 1_609_459_201, type: 'CLAN_CHAT', text: 'anyone selling nats?' },
+        clanChat: { name: 'Ardy Splash' },
+      }),
+      '5.6.7.8',
+    );
 
     expect(fcResult).toEqual({
       status: 'forwarded',
@@ -417,7 +510,13 @@ describe('handleChatRelayPayload', () => {
       normalizedName: 'ardy splash',
     });
 
-    const result = await handleChatRelayPayload(makeRawMessage({ sender: 'Griefer', message: 'spam spam spam' }), '1.2.3.4');
+    const result = await handleChatRelayPayload(
+      makeRawMessage({
+        message: { id: 1417339442575, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'spam spam spam' },
+        user: { name: 'Griefer' },
+      }),
+      '1.2.3.4',
+    );
     expect(result).toEqual({ status: 'dropped', reason: 'blocked' });
   });
 
@@ -451,19 +550,31 @@ describe('handleChatRelayPayload', () => {
     it('drops an identical message relayed again (e.g. by a second client in the same chat)', async () => {
       await registerCommunity();
 
-      const first = await handleChatRelayPayload(makeRawMessage({ id: 1 }), '1.2.3.4');
-      const second = await handleChatRelayPayload(makeRawMessage({ id: 2 }), '5.6.7.8');
+      const first = await handleChatRelayPayload(
+        makeRawMessage({ message: { id: 1, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'anyone selling nats?' } }),
+        '1.2.3.4',
+      );
+      const second = await handleChatRelayPayload(
+        makeRawMessage({ message: { id: 2, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'anyone selling nats?' } }),
+        '5.6.7.8',
+      );
 
       expect(first.status).toBe('forwarded');
       expect(second).toEqual({ status: 'dropped', reason: 'duplicate' });
       expect(broadcastChatMessage).toHaveBeenCalledTimes(1);
     });
 
-    it('treats messages differing only by unrelated `id` as duplicates, since id is never shared across clients', async () => {
+    it('treats messages differing only by unrelated `id`/`timestamp` as duplicates, since id is never shared across clients', async () => {
       await registerCommunity();
 
-      await handleChatRelayPayload(makeRawMessage({ id: 111 }), '1.2.3.4');
-      const result = await handleChatRelayPayload(makeRawMessage({ id: 999, timestamp: '2021-01-01T00:00:01.000000000Z' }), '1.2.3.4');
+      await handleChatRelayPayload(
+        makeRawMessage({ message: { id: 111, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'anyone selling nats?' } }),
+        '1.2.3.4',
+      );
+      const result = await handleChatRelayPayload(
+        makeRawMessage({ message: { id: 999, timestamp: 1_609_459_201, type: 'FRIENDSCHAT', text: 'anyone selling nats?' } }),
+        '1.2.3.4',
+      );
 
       expect(result).toEqual({ status: 'dropped', reason: 'duplicate' });
     });
@@ -471,8 +582,14 @@ describe('handleChatRelayPayload', () => {
     it('does not treat a different message from the same sender as a duplicate', async () => {
       await registerCommunity();
 
-      const first = await handleChatRelayPayload(makeRawMessage({ message: 'first message' }), '1.2.3.4');
-      const second = await handleChatRelayPayload(makeRawMessage({ message: 'second message' }), '1.2.3.4');
+      const first = await handleChatRelayPayload(
+        makeRawMessage({ message: { id: 1, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'first message' } }),
+        '1.2.3.4',
+      );
+      const second = await handleChatRelayPayload(
+        makeRawMessage({ message: { id: 2, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'second message' } }),
+        '1.2.3.4',
+      );
 
       expect(first.status).toBe('forwarded');
       expect(second.status).toBe('forwarded');
@@ -488,10 +605,19 @@ describe('handleChatRelayPayload', () => {
         normalizedName: 'ardy splash cc',
       });
 
-      const first = await handleChatRelayPayload(makeRawMessage({ sender: 'Zezima' }), '1.2.3.4');
-      const second = await handleChatRelayPayload(makeRawMessage({ sender: 'Woox' }), '5.6.7.8');
+      const first = await handleChatRelayPayload(makeRawMessage({ user: { name: 'Zezima' } }), '1.2.3.4');
+      const second = await handleChatRelayPayload(
+        makeRawMessage({
+          message: { id: 2, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'anyone selling nats?' },
+          user: { name: 'Woox' },
+        }),
+        '5.6.7.8',
+      );
       const third = await handleChatRelayPayload(
-        makeRawMessage({ chatType: 'CLAN', chatName: 'Ardy Splash CC' }),
+        makeRawMessage({
+          message: { id: 3, timestamp: 1_609_459_200, type: 'CLAN_CHAT', text: 'anyone selling nats?' },
+          clanChat: { name: 'Ardy Splash CC' },
+        }),
         '9.9.9.9',
       );
 

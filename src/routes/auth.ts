@@ -152,7 +152,9 @@ router.post('/email', requireAuth, emailChangeLimiter, async (req: Request, res:
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  if (!EMAIL_RE.test(normalizedEmail)) {
+  // shortcut: ReDoS guard, EMAIL_RE's two [^\s@]+ groups can both match '.', making worst-case
+  // backtracking quadratic — bound the input length so that stays cheap. RFC 5321 max is 254.
+  if (normalizedEmail.length > 254 || !EMAIL_RE.test(normalizedEmail)) {
     res.status(400).json({ error: 'Invalid email address' });
     return;
   }

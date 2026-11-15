@@ -45,18 +45,18 @@ beforeEach(async () => {
   resetChatRelayDedupState();
 });
 
+/** Matches the current RawChatRelayMessage shape — see services/chatRelay.test.ts. An override
+ *  replaces its top-level key wholesale, not a deep merge. */
 function makeRawMessage(overrides: Record<string, unknown> = {}) {
   return {
-    id: 1417339442575,
-    timestamp: '2021-01-01T00:00:00.000000000Z',
-    chatType: 'FRIENDS',
-    chatName: 'Ardy Splash',
-    sender: 'Zezima',
-    rank: -1,
-    message: 'hello from the relay',
+    message: { id: 1417339442575, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'hello from the relay' },
+    user: { name: 'Zezima' },
+    friendsChat: { name: 'Ardy Splash' },
     ...overrides,
   };
 }
+
+const sourceArg = { id: 1417339442575, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', edited: false };
 
 describe('POST /api/chat-relay', () => {
   async function registerCommunity() {
@@ -95,6 +95,9 @@ describe('POST /api/chat-relay', () => {
       'Zezima',
       'hello from the relay',
       undefined,
+      sourceArg,
+      undefined,
+      undefined,
     );
     expect(forwardChatWebhookPayload).toHaveBeenCalledWith(
       'https://discord.com/api/webhooks/1/token',
@@ -105,13 +108,21 @@ describe('POST /api/chat-relay', () => {
   it('handles each request independently across multiple POSTs', async () => {
     await registerCommunity();
 
-    const first = await request(app).post('/api/chat-relay').send(makeRawMessage({ id: 1, message: 'first' }));
+    const first = await request(app)
+      .post('/api/chat-relay')
+      .send(makeRawMessage({ message: { id: 1, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'first' } }));
     const second = await request(app)
       .post('/api/chat-relay')
-      .send(makeRawMessage({ id: 2, sender: 'Woox', message: 'second' }));
+      .send(makeRawMessage({
+        message: { id: 2, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'second' },
+        user: { name: 'Woox' },
+      }));
     const third = await request(app)
       .post('/api/chat-relay')
-      .send(makeRawMessage({ id: 3, sender: 'Durial321', message: 'third' }));
+      .send(makeRawMessage({
+        message: { id: 3, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'third' },
+        user: { name: 'Durial321' },
+      }));
 
     expect([first.status, second.status, third.status]).toEqual([204, 204, 204]);
     expect(broadcastChatMessage).toHaveBeenCalledTimes(3);
@@ -120,8 +131,13 @@ describe('POST /api/chat-relay', () => {
   it('drops a duplicate message relayed again in a separate request (e.g. by another client)', async () => {
     await registerCommunity();
 
-    await request(app).post('/api/chat-relay').send(makeRawMessage({ id: 1 }));
-    const res = await request(app).post('/api/chat-relay').send(makeRawMessage({ id: 2 })); // same content, different client-local id
+    await request(app)
+      .post('/api/chat-relay')
+      .send(makeRawMessage({ message: { id: 1, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'hello from the relay' } }));
+    // Same content, different client-local id — still a duplicate (dedup ignores id).
+    const res = await request(app)
+      .post('/api/chat-relay')
+      .send(makeRawMessage({ message: { id: 2, timestamp: 1_609_459_200, type: 'FRIENDSCHAT', text: 'hello from the relay' } }));
 
     expect(res.status).toBe(204);
     expect(broadcastChatMessage).toHaveBeenCalledTimes(1);
@@ -130,7 +146,7 @@ describe('POST /api/chat-relay', () => {
   it('still drops unregistered/malformed content with a 204 and no broadcast', async () => {
     const res = await request(app)
       .post('/api/chat-relay')
-      .send(makeRawMessage({ chatName: 'Nobody Claims This' }));
+      .send(makeRawMessage({ friendsChat: { name: 'Nobody Claims This' } }));
 
     expect(res.status).toBe(204);
     expect(broadcastChatMessage).not.toHaveBeenCalled();
@@ -149,7 +165,7 @@ describe('POST /api/chat-relay', () => {
 
     await request(app)
       .post('/api/chat-relay')
-      .send(makeRawMessage({ rank: 7 })); // FriendsChatRank.OWNER
+      .send(makeRawMessage({ user: { name: 'Zezima', friendsChatRank: 'OWNER' } }));
 
     expect(broadcastChatMessage).toHaveBeenCalledWith(
       expect.any(String),
@@ -157,6 +173,9 @@ describe('POST /api/chat-relay', () => {
       'Zezima',
       'hello from the relay',
       expect.objectContaining({ rank: 7, name: 'Owner' }),
+      sourceArg,
+      undefined,
+      undefined,
     );
   });
 });
