@@ -23,3 +23,5 @@ jobs:
       # --runInBand: every test file shares one globalSetup-created in-memory MongoDB instance,
       # so running files in parallel workers races clearCollections()/writes across suites.
       - run: npx jest --runInBand --forceExit --detectOpenHandles
+        env:
+          MONGOMS_DEBUG: '1'
