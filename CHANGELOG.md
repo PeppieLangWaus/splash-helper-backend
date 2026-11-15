@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-11-15
+### Fixed
+- Update `src/__tests__/services/chatRelay.test.ts` and `src/__tests__/routes/chatRelay.test.ts` to the current nested plugin message shape (`message`/`user`/`friendsChat`/`clanChat`) — they still built the flat shape from before that migration, so every case in both files failed against the real parser. Also updates the clan-rank-tier test to match the current contract: a custom tier's title now always comes through, only its icon is omitted.
+
 ## [1.6.2] - 2026-11-15
 ### Fixed
 - Pin `mongoose` to `9.9.2`, exact (was `^9.11.4`). Every mongoose version from 9.10.0 onward sends a `driverInfo` client-metadata option the `mongodb` driver can't handle correctly against current MongoDB server versions — the server rejects the handshake (`MongoServerError: Missing required sub-document 'driver'...`, code 183) and every connection just hangs. This was breaking staging and failing CI's "test" check outright. 9.9.2 still carries the `sanitizeFilter`/`countDocuments` and `$nor` NoSQL-injection fixes; it's missing only the connection-level `sanitizeFilter` fix (CVE-2026-125119), which this session's earlier input-validation fixes (typeof checks before every Mongoose filter) already cover for this app's actual routes.
@@ -13,6 +17,7 @@ All notable changes to this project are documented in this file.
 ### Fixed
 - Cap the email address length checked against `EMAIL_RE` in `/auth/email` before running the regex, closing a ReDoS where both halves of the pattern could match repeated `.` characters.
 - Add an explicit `permissions: contents: read` block to the Test GitHub Actions workflow, instead of relying on the (broader) repository default.
+>>>>>>> 5b99f29 (fix(test): update chatRelay tests to the current plugin message shape)
 
 ## [1.6.0] - 2026-11-15
 ### Added
