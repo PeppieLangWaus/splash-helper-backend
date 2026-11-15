@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { existsSync } from 'fs';
 import path from 'path';
+import { rateLimit } from '../middleware/rateLimit';
 
 const router = Router();
+router.use(rateLimit({ windowMs: 60 * 1000, max: 300 }));
 
 // Populated by `npm run render-item-icons` (scripts/render-item-icons.ts) — a headless renderer
 // (scripts/item-icons) reads a real OSRS cache and produces one {itemId}.png per named item,

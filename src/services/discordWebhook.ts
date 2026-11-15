@@ -175,7 +175,9 @@ export function upsertArchivedSessionNotification(
             // there — falling through to post a new one would duplicate it. Keep the
             // existing id and let the next update retry the edit instead.
             console.error(
-              `Failed to edit archived-session message ${existingMessageId} for "${username}":`,
+              'Failed to edit archived-session message %s for "%s":',
+              existingMessageId,
+              username,
               (err as Error).message,
             );
             resolve(existingMessageId);
@@ -191,7 +193,7 @@ export function upsertArchivedSessionNotification(
         const msg = await client.send({ embeds: [embed] });
         resolve(msg.id);
       } catch (err) {
-        console.error(`Discord webhook error for "${username}":`, (err as Error).message);
+        console.error('Discord webhook error for "%s":', username, (err as Error).message);
         resolve(undefined);
       }
     });

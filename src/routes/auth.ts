@@ -50,9 +50,9 @@ const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
  * Returns: { token: string }
  */
 router.post('/login', loginLimiter, async (req: Request, res: Response): Promise<void> => {
-  const { username, password } = req.body as { username?: string; password?: string };
+  const { username, password } = req.body as { username?: unknown; password?: unknown };
 
-  if (!username || !password) {
+  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
     res.status(400).json({ error: 'username and password are required' });
     return;
   }
@@ -201,11 +201,13 @@ router.post('/email', requireAuth, emailChangeLimiter, async (req: Request, res:
   res.json({ email: user.email, emailVerifiedAt: null, message: 'Verification email sent.' });
 });
 
+const verifyEmailTokenLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+
 /**
  * GET /auth/verify-email/:token
  * Public — the token itself is the credential. Single use, 24h expiry.
  */
-router.get('/verify-email/:token', async (req: Request, res: Response): Promise<void> => {
+router.get('/verify-email/:token', verifyEmailTokenLimiter, async (req: Request, res: Response): Promise<void> => {
   const { token } = req.params;
   const record = await EmailVerificationToken.findOne({ tokenHash: hashToken(token), expiresAt: { $gt: new Date() } });
   if (!record) {

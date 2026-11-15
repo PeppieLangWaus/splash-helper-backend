@@ -16,6 +16,7 @@ import { User } from '../models/User';
 import { ArchivedSession } from '../models/ArchivedSession';
 import { ActiveSessionState } from '../types';
 import { requireEnv } from '../config/env';
+import { rateLimit } from '../middleware/rateLimit';
 
 /**
  * Dev-only endpoints for injecting/removing fake active sessions without a
@@ -30,6 +31,8 @@ const JWT_SECRET = requireEnv('JWT_SECRET');
 
 const router = Router();
 const DEFAULT_DEV_ADMIN_USERNAME = 'DevAdmin';
+
+router.use(rateLimit({ windowMs: 60 * 1000, max: 300 }));
 
 /**
  * POST /dev/reset
@@ -169,7 +172,7 @@ router.post('/sessions', async (req: Request, res: Response): Promise<void> => {
     );
     historicalSessionsAdded = inserted.length;
   } catch (err) {
-    console.error(`Failed to seed fake historical sessions for "${username}":`, err);
+    console.error('Failed to seed fake historical sessions for "%s":', username, err);
   }
 
   res.status(201).json({ username, sessionData: state.sessionData, pinned: state.pinned ?? false, historicalSessionsAdded });
@@ -231,7 +234,7 @@ router.delete('/sessions/:username', async (req: Request, res: Response): Promis
       await user.deleteOne();
     }
   } catch (err) {
-    console.error(`Failed to clean up fake user/history for "${username}":`, err);
+    console.error('Failed to clean up fake user/history for "%s":', username, err);
   }
 
   res.json({ message: `Removed fake session for "${username}"` });
