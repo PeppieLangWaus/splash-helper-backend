@@ -28,6 +28,9 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 const DB_PATH = path.resolve(__dirname, '../../.devdata/mongo');
 
 async function main(): Promise<void> {
+  // app.ts only mounts the /dev routes when NODE_ENV is exactly 'development'.
+  process.env.NODE_ENV ??= 'development';
+
   // MongoMemoryServer expects an existing directory when a fixed dbPath is
   // given — it only auto-creates its default throwaway tmpDir, not ours.
   fs.mkdirSync(DB_PATH, { recursive: true });

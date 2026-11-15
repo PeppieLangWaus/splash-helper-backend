@@ -14,7 +14,24 @@ import { getClientIp } from '../utils/clientIp';
 
 const router = Router();
 const JWT_SECRET = requireEnv('JWT_SECRET');
-const SETUP_LINK_SECRET = process.env.SETUP_LINK_SECRET ?? JWT_SECRET;
+
+/**
+ * The setup-link secret is shared with the URL shortener (which verifies setup JWTs before
+ * shortening). In production it must be set AND differ from JWT_SECRET — falling back to
+ * JWT_SECRET would hand the shortener service the session-JWT signing key, letting it mint
+ * arbitrary (including admin) session tokens. Dev keeps the convenient fallback.
+ */
+function resolveSetupLinkSecret(): string {
+  if (process.env.NODE_ENV !== 'production') {
+    return process.env.SETUP_LINK_SECRET ?? JWT_SECRET;
+  }
+  const secret = requireEnv('SETUP_LINK_SECRET');
+  if (secret === JWT_SECRET) {
+    throw new Error('SETUP_LINK_SECRET must differ from JWT_SECRET in production');
+  }
+  return secret;
+}
+const SETUP_LINK_SECRET = resolveSetupLinkSecret();
 const SETUP_LINK_EXPIRY = (process.env.SETUP_LINK_EXPIRY ?? '24h') as `${number}${'s'|'m'|'h'|'d'}` | undefined;
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 // Both optional: if either is unset (e.g. local dev without the shortener running),
@@ -23,12 +40,16 @@ const SHORTENER_API_URL = process.env.SHORTENER_API_URL;
 const SHORTENER_API_KEY = process.env.SHORTENER_API_KEY;
 const SHORTENER_TIMEOUT_MS = 2500;
 
+// Same per-IP budget as resetPasswordTokenLimiter below — login is the other online
+// password-guessing surface.
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+
 /**
  * POST /auth/login
  * Body: { username: string; password: string }
  * Returns: { token: string }
  */
-router.post('/login', async (req: Request, res: Response): Promise<void> => {
+router.post('/login', loginLimiter, async (req: Request, res: Response): Promise<void> => {
   const { username, password } = req.body as { username?: string; password?: string };
 
   if (!username || !password) {
@@ -53,12 +74,14 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
   res.json({ token, username: user.username, isAdmin: user.isAdmin, communityEligible: user.communityEligible });
 });
 
+const setupTokenLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10 });
+
 /**
  * POST /auth/setup/:setupToken
  * Body: { password: string }
  * Validates the signed setup JWT, sets the user's password, marks the link as used.
  */
-router.post('/setup/:setupToken', async (req: Request, res: Response): Promise<void> => {
+router.post('/setup/:setupToken', setupTokenLimiter, async (req: Request, res: Response): Promise<void> => {
   const { setupToken } = req.params;
   const { password } = req.body as { password?: string };
 

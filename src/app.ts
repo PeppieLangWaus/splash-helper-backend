@@ -39,6 +39,12 @@ const allowedOrigins = (process.env.CORS_ORIGIN_API ?? process.env.CORS_ORIGIN_W
   .map(origin => origin.trim())
   .filter(Boolean);
 
+// Fail closed rather than open: cors() with an undefined origin list reflects *every* origin.
+// In production that misconfiguration should stop the deploy at startup, not silently allow all.
+if (process.env.NODE_ENV === 'production' && !allowedOrigins?.length) {
+  throw new Error('CORS_ORIGIN_API (or CORS_ORIGIN_WS) must be set in production');
+}
+
 app.use(cors({
   origin: allowedOrigins,
 }));
@@ -62,7 +68,11 @@ app.use('/chat-channels', chatChannelsRouter);
 app.use('/items', itemsRouter);
 app.use('/link-preview', linkPreviewRouter);
 
-if (process.env.NODE_ENV !== 'production') {
+// Explicit opt-in, not "anything that isn't production": these routes wipe the DB and mint admin
+// JWTs with no auth, so a missing/typo'd NODE_ENV must leave them unmounted. dev:local sets
+// NODE_ENV=development (see devtools/localServer.ts); plain `npm run dev` — which points at the
+// real MONGODB_URI — deliberately does not get them.
+if (process.env.NODE_ENV === 'development') {
   app.use('/dev', devRouter);
 }
 

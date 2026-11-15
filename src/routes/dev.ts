@@ -19,7 +19,7 @@ import { requireEnv } from '../config/env';
 
 /**
  * Dev-only endpoints for injecting/removing fake active sessions without a
- * real RuneLite plugin connection. Mounted only when NODE_ENV !== 'production'
+ * real RuneLite plugin connection. Mounted only when NODE_ENV === 'development'
  * (see app.ts). Bypasses auth entirely. The active session lives only in the
  * in-memory sessionManager map, but adding one also seeds a matching fake
  * User + a batch of ArchivedSession history in the DB so the splasher's
@@ -38,7 +38,7 @@ const DEFAULT_DEV_ADMIN_USERNAME = 'DevAdmin';
  * src/devtools/localServer.ts) can be blown away on demand instead of only
  * by deleting .devdata/mongo by hand. Meant to back a "Reset dev data"
  * button in the frontend's dev view — dev-only, mounted only when
- * NODE_ENV !== 'production' (see app.ts), no auth required.
+ * NODE_ENV === 'development' (see app.ts), no auth required.
  */
 router.post('/reset', async (_req: Request, res: Response): Promise<void> => {
   clearSessions();
